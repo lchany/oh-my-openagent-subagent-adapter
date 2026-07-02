@@ -99,6 +99,56 @@ codex exec --cd "$PWD" \
 
 If `multi_agent_v2` is not enabled in user config, add `--enable multi_agent_v2` to the `codex exec` command.
 
+## GitHub-backed worktree stacks
+
+The Codex workflow supports VERL projects where GitHub branches are the source of truth, local git worktrees hold the management, baseline, and optimized source trees, and a stack wrapper switches the runtime source tree inside training containers.
+
+Expected project shape:
+
+```text
+<management-worktree>/
+  stacks/verl/<project>/
+    stack.json
+    scripts/switch_stack.py
+    scripts/trainctl.py
+    inventories/*.json
+    variants/<variant>/*.sh
+<baseline-source-worktree>/
+<optimized-source-worktree>/
+```
+
+In this mode, the workflow uses `source_release_manager` before runner phases. It verifies branch names, commits, worktree cleanliness, GitHub publication state when required, baseline absence markers, optimized presence markers, and the approved runtime switch/train wrapper contract. Runners then consume that source checkpoint and must launch through `trainctl.py`; they must not directly invoke `container_train_*.sh` when `trainctl.py` exists.
+
+Minimal work-order fields:
+
+```yaml
+source_release:
+  remote: "git@github.com:lchany/hw-gitworktree-baseline-optimized.git"
+  sync_policy: "verify_only"
+  management:
+    branch: "main"
+    worktree: "/mnt/disk2t/l30002999/hw-gitworktree-baseline-optimized"
+  baseline:
+    branch: "verl-mini-video-baseline"
+    worktree: "/mnt/disk2t/l30002999/hw-gitworktree-baseline-optimized-baseline"
+    immutable: true
+  optimized:
+    branch: "verl-mini-video-optimized-v4"
+    worktree: "/mnt/disk2t/l30002999/hw-gitworktree-baseline-optimized-v4"
+    publish_required_before_run: true
+worktree_stack:
+  enabled: true
+  stack_root: "/mnt/disk2t/l30002999/hw-gitworktree-baseline-optimized/stacks/verl/mini_video_v4_compare"
+  inventory: "inventories/59_local_restore.json"
+  nodes: "1"
+  variants:
+    baseline: "baseline"
+    optimized: "optimized-v4"
+  runtime_target: "/vllm-workspace/verl"
+```
+
+Use `sync_policy: verify_only` unless the current user instruction explicitly allows pull, fetch, or push. If publication must be performed, use `push_allowed` only for that phase and record the authorization in the work-order.
+
 ## Updating
 
 After changing the plugin, update the plugin version cachebuster and reinstall:
