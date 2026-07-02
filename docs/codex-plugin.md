@@ -12,11 +12,30 @@ This repository includes a Codex CLI version of the VERL subagent union workflow
 
 ## Install on another machine
 
-Clone the repository and start Codex from the repository root. Current Codex builds may require `multi_agent_v2` for repo custom agents, so enable it explicitly:
+Clone the repository, enable custom-agent dispatch, then start Codex from the repository root.
 
 ```bash
 git clone https://github.com/lchany/oh-my-openagent-subagent-adapter.git
 cd oh-my-openagent-subagent-adapter
+```
+
+Recommended persistent setup for current Codex builds:
+
+```toml
+# ~/.codex/config.toml
+[features]
+multi_agent_v2 = true
+```
+
+Then start Codex normally:
+
+```bash
+codex
+```
+
+If you do not want to change user config, enable the feature per launch:
+
+```bash
 codex --enable multi_agent_v2
 ```
 
@@ -74,9 +93,11 @@ Expected result:
 For a non-interactive custom-agent check:
 
 ```bash
-codex exec --enable multi_agent_v2 --cd "$PWD" \
+codex exec --cd "$PWD" \
   'Spawn the custom agent named workflow_generalist for a smoke test. Do not substitute default, explorer, or worker. The subagent must not run commands or edit files. Ask it to return only: role=workflow_generalist and specialized_agent_applicable=false.'
 ```
+
+If `multi_agent_v2` is not enabled in user config, add `--enable multi_agent_v2` to the `codex exec` command.
 
 ## Updating
 
