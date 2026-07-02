@@ -1,0 +1,35 @@
+{
+  "name": "verl-subagent-union-workflow",
+  "version": "0.1.0+codex.20260702092622",
+  "description": "Explicitly triggered Codex controller for VERL and Ascend/NPU multi-agent optimization workflows.",
+  "author": {
+    "name": "lchany"
+  },
+  "repository": "https://github.com/lchany/oh-my-openagent-subagent-adapter",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "subagents",
+    "verl",
+    "ascend",
+    "npu"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "VERL Subagent Union Workflow",
+    "shortDescription": "Explicit Codex controller for VERL/NPU optimization phases.",
+    "longDescription": "A Codex plugin that starts a controller-only workflow for VERL and Ascend/NPU optimization runs. It uses repo-scoped Codex custom agents and only triggers when explicitly invoked.",
+    "developerName": "lchany",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Subagents"
+    ],
+    "defaultPrompt": [
+      "Start VERL workflow controller",
+      "Resume VERL workflow controller",
+      "Explain VERL workflow state"
+    ],
+    "brandColor": "#2563EB"
+  }
+}

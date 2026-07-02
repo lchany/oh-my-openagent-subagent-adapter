@@ -1,0 +1,7 @@
+interface:
+  display_name: "VERL Subagent Union Workflow"
+  short_description: "Explicit controller for VERL/NPU optimization workflows."
+  default_prompt: "Start VERL workflow controller"
+
+policy:
+  allow_implicit_invocation: false

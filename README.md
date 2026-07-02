@@ -49,3 +49,4 @@ task({ subagent_type: "<name>", load_skills: [], prompt: "Return exactly: ok" })
 ## Packaged workflows
 
 - `verl-subagent-union-workflow/`: OpenCode workflow skill and subagent definitions for controlled VERL + Ascend/NPU optimization runs, including environment repair, runner preflight, topology-pair progression, implementation review, and supervisor gates.
+- `plugins/verl-subagent-union-workflow/` plus `.codex/agents/`: Codex CLI plugin and custom-agent version of the same workflow. See `docs/codex-plugin.md`.

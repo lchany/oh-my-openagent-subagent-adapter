@@ -1,0 +1,20 @@
+{
+  "name": "oh-my-openagent-local",
+  "interface": {
+    "displayName": "oh-my-openagent local"
+  },
+  "plugins": [
+    {
+      "name": "verl-subagent-union-workflow",
+      "source": {
+        "source": "local",
+        "path": "./plugins/verl-subagent-union-workflow"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
