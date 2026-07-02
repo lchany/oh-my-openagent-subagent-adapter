@@ -45,3 +45,7 @@ task({ subagent_type: "<name>", load_skills: [], prompt: "Return exactly: ok" })
 - `docs/background.md`: why the patch exists and what path it changes.
 - `docs/implementation.md`: exact code-level change and resolution order.
 - `docs/apply-patch.md`: detailed patch and verification workflow.
+
+## Packaged workflows
+
+- `verl-subagent-union-workflow/`: OpenCode workflow skill and subagent definitions for controlled VERL + Ascend/NPU optimization runs, including environment repair, runner preflight, topology-pair progression, implementation review, and supervisor gates.
