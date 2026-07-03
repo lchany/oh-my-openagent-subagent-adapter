@@ -4,6 +4,49 @@ This document explains how to deploy the packaged subagent workflow for another 
 
 The workflow assumes the optimization design and code ownership are prepared by the project owner first. The subagents then validate the environment, switch between baseline and optimized worktrees, run training, publish approved scripts/source changes, compare results, and produce a report.
 
+## 0. LLM Executor Start Here
+
+This document is intended to be usable by an LLM/Codex agent directly. If you are an LLM deploying this workflow on a new or existing machine, follow this section first and treat it as the deployment contract.
+
+Your job is to make the workflow ready to use, not to run training. Complete these tasks in order:
+
+1. Detect whether this is a fresh machine or an old machine with existing checkout paths.
+2. Clone or update `https://github.com/lchany/oh-my-openagent-subagent-adapter`.
+3. Clone or update `https://github.com/lchany/hw-gitworktree-baseline-optimized`.
+4. Create or update the sibling baseline and optimized worktrees required by `stack.json`.
+5. Enable Codex custom-agent dispatch with `multi_agent_v2 = true`.
+6. Register the adapter repository marketplace and install `verl-subagent-union-workflow`.
+7. Copy `.codex/agents` from the adapter repository into the target management repository.
+8. Generate a safe reference work-order if one does not already exist.
+9. Run the smoke test from the target management repository, not only from the adapter repository.
+10. Report the final ready-to-use command.
+
+Hard rules for the LLM executor:
+
+- Check before every action. If the target already exists and is valid, skip or update it.
+- If a path exists but is not the expected git repository or worktree, stop and report the conflict.
+- Do not overwrite an existing work-order; create a `.template.yaml` beside it.
+- Do not modify model source code.
+- Do not run training.
+- Do not push unless the user explicitly asks in the current turn.
+- Keep output concise and summarize command results instead of pasting full logs.
+
+Use the idempotent shell block in [2.1 Clone Both Repositories](#21-clone-both-repositories) as the canonical implementation. After it succeeds, start Codex from the stack repository and invoke the workflow:
+
+```bash
+cd /home/$USER/hw-gitworktree-baseline-optimized
+codex
+```
+
+Then in Codex:
+
+```text
+$verl-subagent-union-workflow
+Use work-order: stacks/verl/mini_video_v4_compare/work-orders/single-node-reference.yaml
+```
+
+The generated reference work-order is safe by default. It has training and git push disabled until the real model path, dataset path, and permissions are deliberately updated.
+
 ## 1. What Gets Deployed
 
 The deployment uses two GitHub repositories:
@@ -62,6 +105,10 @@ Rules:
 - Do not modify model source code.
 - Do not run training.
 - Do not push unless explicitly instructed after deployment.
+- Before every deployment action, check whether the target already exists.
+- If an existing repository, worktree, plugin, agent directory, or work-order is already valid, skip that step and continue.
+- If an existing path is present but not the expected repository or worktree, stop and report the path conflict instead of overwriting it.
+- Do not overwrite an existing work-order. If one exists, keep it and create a `.template.yaml` only when a fresh template is needed.
 - If a command fails, stop, summarize the failing command and error, then fix only the deployment issue.
 - Keep logs concise; do not paste full command output.
 
@@ -123,11 +170,24 @@ Success criteria:
 
 ### 2.1 Clone Both Repositories
 
+On an old machine, inspect before cloning. If the paths already exist and are the expected repositories, update them; if they exist but are not the expected repositories, stop and resolve the path conflict.
+
 ```bash
 cd /home/$USER
-git clone https://github.com/lchany/oh-my-openagent-subagent-adapter.git
-git clone https://github.com/lchany/hw-gitworktree-baseline-optimized.git
-cd oh-my-openagent-subagent-adapter
+
+if [ -d oh-my-openagent-subagent-adapter/.git ]; then
+  git -C oh-my-openagent-subagent-adapter pull
+else
+  test ! -e oh-my-openagent-subagent-adapter
+  git clone https://github.com/lchany/oh-my-openagent-subagent-adapter.git
+fi
+
+if [ -d hw-gitworktree-baseline-optimized/.git ]; then
+  git -C hw-gitworktree-baseline-optimized pull
+else
+  test ! -e hw-gitworktree-baseline-optimized
+  git clone https://github.com/lchany/hw-gitworktree-baseline-optimized.git
+fi
 ```
 
 If the repositories already exist, update them before installing:
@@ -141,7 +201,7 @@ git pull
 
 The adapter repository installs the workflow. The `hw-gitworktree-baseline-optimized` repository is the reference implementation for how a target model project should expose baseline/optimized source branches, stack metadata, training scripts, Ray scripts, and runtime switching.
 
-For an LLM executor, this idempotent shell block is the preferred deployment path:
+For an LLM executor, this idempotent shell block is the preferred deployment path. It is safe on an old machine: every step checks existing state first, skips valid existing resources, and stops on path conflicts instead of deleting user work.
 
 ```bash
 set -euo pipefail
@@ -153,13 +213,27 @@ STACK_REPO="$INSTALL_ROOT/hw-gitworktree-baseline-optimized"
 mkdir -p "$INSTALL_ROOT"
 cd "$INSTALL_ROOT"
 
-if [ -d "$ADAPTER_REPO/.git" ]; then
+if [ -e "$ADAPTER_REPO" ] && [ ! -d "$ADAPTER_REPO/.git" ]; then
+  echo "ERROR: $ADAPTER_REPO exists but is not a git repository" >&2
+  exit 1
+elif [ -d "$ADAPTER_REPO/.git" ]; then
+  if ! git -C "$ADAPTER_REPO" remote -v | grep -q 'lchany/oh-my-openagent-subagent-adapter'; then
+    echo "ERROR: $ADAPTER_REPO is not the expected adapter repository" >&2
+    exit 1
+  fi
   git -C "$ADAPTER_REPO" pull
 else
   git clone https://github.com/lchany/oh-my-openagent-subagent-adapter.git "$ADAPTER_REPO"
 fi
 
-if [ -d "$STACK_REPO/.git" ]; then
+if [ -e "$STACK_REPO" ] && [ ! -d "$STACK_REPO/.git" ]; then
+  echo "ERROR: $STACK_REPO exists but is not a git repository" >&2
+  exit 1
+elif [ -d "$STACK_REPO/.git" ]; then
+  if ! git -C "$STACK_REPO" remote -v | grep -q 'lchany/hw-gitworktree-baseline-optimized'; then
+    echo "ERROR: $STACK_REPO is not the expected stack repository" >&2
+    exit 1
+  fi
   git -C "$STACK_REPO" pull
 else
   git clone https://github.com/lchany/hw-gitworktree-baseline-optimized.git "$STACK_REPO"
@@ -170,7 +244,10 @@ OPTIMIZED_WORKTREE="$INSTALL_ROOT/hw-gitworktree-baseline-optimized-v4"
 
 git -C "$STACK_REPO" fetch origin verl-mini-video-baseline verl-mini-video-optimized-v4
 
-if [ -d "$BASELINE_WORKTREE/.git" ] || [ -f "$BASELINE_WORKTREE/.git" ]; then
+if [ -e "$BASELINE_WORKTREE" ] && [ ! -d "$BASELINE_WORKTREE/.git" ] && [ ! -f "$BASELINE_WORKTREE/.git" ]; then
+  echo "ERROR: $BASELINE_WORKTREE exists but is not a git worktree" >&2
+  exit 1
+elif [ -d "$BASELINE_WORKTREE/.git" ] || [ -f "$BASELINE_WORKTREE/.git" ]; then
   git -C "$BASELINE_WORKTREE" checkout verl-mini-video-baseline
   git -C "$BASELINE_WORKTREE" merge --ff-only origin/verl-mini-video-baseline
 else
@@ -178,7 +255,10 @@ else
     "$BASELINE_WORKTREE" origin/verl-mini-video-baseline
 fi
 
-if [ -d "$OPTIMIZED_WORKTREE/.git" ] || [ -f "$OPTIMIZED_WORKTREE/.git" ]; then
+if [ -e "$OPTIMIZED_WORKTREE" ] && [ ! -d "$OPTIMIZED_WORKTREE/.git" ] && [ ! -f "$OPTIMIZED_WORKTREE/.git" ]; then
+  echo "ERROR: $OPTIMIZED_WORKTREE exists but is not a git worktree" >&2
+  exit 1
+elif [ -d "$OPTIMIZED_WORKTREE/.git" ] || [ -f "$OPTIMIZED_WORKTREE/.git" ]; then
   git -C "$OPTIMIZED_WORKTREE" checkout verl-mini-video-optimized-v4
   git -C "$OPTIMIZED_WORKTREE" merge --ff-only origin/verl-mini-video-optimized-v4
 else
@@ -198,17 +278,31 @@ else
 fi
 
 cd "$ADAPTER_REPO"
-codex plugin marketplace add .
+codex plugin marketplace add . || true
 codex plugin add verl-subagent-union-workflow@oh-my-openagent-local
 
 mkdir -p "$STACK_REPO/.codex"
-rm -rf "$STACK_REPO/.codex/agents"
-cp -R "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents"
+if [ -d "$STACK_REPO/.codex/agents" ] && diff -qr "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents" >/dev/null; then
+  echo "custom_agents=already_current"
+else
+  rm -rf "$STACK_REPO/.codex/agents"
+  cp -R "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents"
+  echo "custom_agents=synchronized"
+fi
 
 WORK_ORDER_DIR="$STACK_REPO/stacks/verl/mini_video_v4_compare/work-orders"
 WORK_ORDER="$WORK_ORDER_DIR/single-node-reference.yaml"
+WORK_ORDER_TEMPLATE="$WORK_ORDER_DIR/single-node-reference.template.yaml"
 mkdir -p "$WORK_ORDER_DIR"
-cat > "$WORK_ORDER" <<YAML
+
+if [ -f "$WORK_ORDER" ]; then
+  echo "reference_work_order=kept_existing:$WORK_ORDER"
+  WORK_ORDER_WRITE_TARGET="$WORK_ORDER_TEMPLATE"
+else
+  WORK_ORDER_WRITE_TARGET="$WORK_ORDER"
+fi
+
+cat > "$WORK_ORDER_WRITE_TARGET" <<YAML
 run_id: "mini-video-v4-compare-single-node-reference"
 topology_order:
   - "single-node"
@@ -279,7 +373,7 @@ test -f "$STACK_REPO/stacks/verl/mini_video_v4_compare/scripts/switch_stack.py"
 test -f "$STACK_REPO/stacks/verl/mini_video_v4_compare/scripts/trainctl.py"
 test -f "$STACK_REPO/stacks/verl/mini_video_v4_compare/variants/baseline/container_train_1node.sh"
 test -f "$STACK_REPO/stacks/verl/mini_video_v4_compare/variants/optimized-v4/container_train_1node.sh"
-test -f "$WORK_ORDER"
+test -f "$WORK_ORDER" || test -f "$WORK_ORDER_TEMPLATE"
 test -e "$BASELINE_WORKTREE/.git"
 test -e "$OPTIMIZED_WORKTREE/.git"
 
@@ -297,6 +391,7 @@ echo "stack_repo=$STACK_REPO"
 echo "baseline_worktree=$BASELINE_WORKTREE"
 echo "optimized_worktree=$OPTIMIZED_WORKTREE"
 echo "reference_work_order=$WORK_ORDER"
+echo "reference_work_order_template=$WORK_ORDER_TEMPLATE"
 echo "plugin_version=$PLUGIN_VERSION"
 echo "next_command=cd $STACK_REPO && codex"
 echo 'next_prompt=$verl-subagent-union-workflow'
@@ -416,8 +511,12 @@ ADAPTER_REPO="/home/$USER/oh-my-openagent-subagent-adapter"
 STACK_REPO="/home/$USER/hw-gitworktree-baseline-optimized"
 
 mkdir -p "$STACK_REPO/.codex"
-rm -rf "$STACK_REPO/.codex/agents"
-cp -R "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents"
+if [ -d "$STACK_REPO/.codex/agents" ] && diff -qr "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents" >/dev/null; then
+  echo "custom agents already current"
+else
+  rm -rf "$STACK_REPO/.codex/agents"
+  cp -R "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents"
+fi
 test -f "$STACK_REPO/.codex/agents/workflow_generalist.toml"
 ```
 
@@ -439,7 +538,10 @@ OPTIMIZED_WORKTREE="$INSTALL_ROOT/hw-gitworktree-baseline-optimized-v4"
 
 git -C "$STACK_REPO" fetch origin verl-mini-video-baseline verl-mini-video-optimized-v4
 
-if [ -d "$BASELINE_WORKTREE/.git" ] || [ -f "$BASELINE_WORKTREE/.git" ]; then
+if [ -e "$BASELINE_WORKTREE" ] && [ ! -d "$BASELINE_WORKTREE/.git" ] && [ ! -f "$BASELINE_WORKTREE/.git" ]; then
+  echo "ERROR: $BASELINE_WORKTREE exists but is not a git worktree" >&2
+  exit 1
+elif [ -d "$BASELINE_WORKTREE/.git" ] || [ -f "$BASELINE_WORKTREE/.git" ]; then
   git -C "$BASELINE_WORKTREE" checkout verl-mini-video-baseline
   git -C "$BASELINE_WORKTREE" merge --ff-only origin/verl-mini-video-baseline
 else
@@ -447,7 +549,10 @@ else
     "$BASELINE_WORKTREE" origin/verl-mini-video-baseline
 fi
 
-if [ -d "$OPTIMIZED_WORKTREE/.git" ] || [ -f "$OPTIMIZED_WORKTREE/.git" ]; then
+if [ -e "$OPTIMIZED_WORKTREE" ] && [ ! -d "$OPTIMIZED_WORKTREE/.git" ] && [ ! -f "$OPTIMIZED_WORKTREE/.git" ]; then
+  echo "ERROR: $OPTIMIZED_WORKTREE exists but is not a git worktree" >&2
+  exit 1
+elif [ -d "$OPTIMIZED_WORKTREE/.git" ] || [ -f "$OPTIMIZED_WORKTREE/.git" ]; then
   git -C "$OPTIMIZED_WORKTREE" checkout verl-mini-video-optimized-v4
   git -C "$OPTIMIZED_WORKTREE" merge --ff-only origin/verl-mini-video-optimized-v4
 else
@@ -458,7 +563,7 @@ fi
 
 ### 2.9 Generate A Reference Work-Order
 
-Create a reference work-order so the workflow can be invoked immediately after deployment. This work-order is safe by default: it verifies the setup but does not allow training launch or git push until the model and dataset paths are replaced and permissions are deliberately expanded.
+Create a reference work-order so the workflow can be invoked immediately after deployment. This work-order is safe by default: it verifies the setup but does not allow training launch or git push until the model and dataset paths are replaced and permissions are deliberately expanded. On an old machine, keep an existing work-order and write a `.template.yaml` instead of overwriting it.
 
 ```bash
 STACK_REPO="/home/$USER/hw-gitworktree-baseline-optimized"
@@ -466,9 +571,16 @@ BASELINE_WORKTREE="/home/$USER/hw-gitworktree-baseline-optimized-baseline"
 OPTIMIZED_WORKTREE="/home/$USER/hw-gitworktree-baseline-optimized-v4"
 WORK_ORDER_DIR="$STACK_REPO/stacks/verl/mini_video_v4_compare/work-orders"
 WORK_ORDER="$WORK_ORDER_DIR/single-node-reference.yaml"
+WORK_ORDER_TEMPLATE="$WORK_ORDER_DIR/single-node-reference.template.yaml"
 mkdir -p "$WORK_ORDER_DIR"
 
-cat > "$WORK_ORDER" <<YAML
+if [ -f "$WORK_ORDER" ]; then
+  WORK_ORDER_WRITE_TARGET="$WORK_ORDER_TEMPLATE"
+else
+  WORK_ORDER_WRITE_TARGET="$WORK_ORDER"
+fi
+
+cat > "$WORK_ORDER_WRITE_TARGET" <<YAML
 run_id: "mini-video-v4-compare-single-node-reference"
 topology_order:
   - "single-node"
@@ -584,11 +696,25 @@ to the `codex exec` command.
 
 ## 3. Manual Install Reference
 
-Clone both repositories on the target machine:
+Clone or update both repositories on the target machine. If a target path already exists but is not the expected git repository, stop instead of overwriting it.
 
 ```bash
-git clone https://github.com/lchany/oh-my-openagent-subagent-adapter.git
-git clone https://github.com/lchany/hw-gitworktree-baseline-optimized.git
+cd /home/$USER
+
+if [ -d oh-my-openagent-subagent-adapter/.git ]; then
+  git -C oh-my-openagent-subagent-adapter pull
+else
+  test ! -e oh-my-openagent-subagent-adapter
+  git clone https://github.com/lchany/oh-my-openagent-subagent-adapter.git
+fi
+
+if [ -d hw-gitworktree-baseline-optimized/.git ]; then
+  git -C hw-gitworktree-baseline-optimized pull
+else
+  test ! -e hw-gitworktree-baseline-optimized
+  git clone https://github.com/lchany/hw-gitworktree-baseline-optimized.git
+fi
+
 cd oh-my-openagent-subagent-adapter
 ```
 
@@ -616,8 +742,12 @@ BASELINE_WORKTREE="/home/$USER/hw-gitworktree-baseline-optimized-baseline"
 OPTIMIZED_WORKTREE="/home/$USER/hw-gitworktree-baseline-optimized-v4"
 
 mkdir -p "$STACK_REPO/.codex"
-rm -rf "$STACK_REPO/.codex/agents"
-cp -R "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents"
+if [ -d "$STACK_REPO/.codex/agents" ] && diff -qr "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents" >/dev/null; then
+  echo "custom agents already current"
+else
+  rm -rf "$STACK_REPO/.codex/agents"
+  cp -R "$ADAPTER_REPO/.codex/agents" "$STACK_REPO/.codex/agents"
+fi
 
 git -C "$STACK_REPO" fetch origin verl-mini-video-baseline verl-mini-video-optimized-v4
 if [ -d "$BASELINE_WORKTREE/.git" ] || [ -f "$BASELINE_WORKTREE/.git" ]; then
