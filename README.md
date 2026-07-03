@@ -45,6 +45,7 @@ task({ subagent_type: "<name>", load_skills: [], prompt: "Return exactly: ok" })
 - `docs/background.md`: why the patch exists and what path it changes.
 - `docs/implementation.md`: exact code-level change and resolution order.
 - `docs/apply-patch.md`: detailed patch and verification workflow.
+- `docs/subagent-workflow-deployment.md`: how to deploy the Codex subagent workflow for another high-performance or large-model VERL/NPU project.
 
 ## Packaged workflows
 
