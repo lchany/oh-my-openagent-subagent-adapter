@@ -1,6 +1,6 @@
 {
   "name": "verl-subagent-union-workflow",
-  "version": "0.1.0+codex.20260702115529",
+  "version": "0.1.0+codex.20260703081530",
   "description": "Explicitly triggered Codex controller for VERL and Ascend/NPU multi-agent optimization workflows.",
   "author": {
     "name": "lchany"

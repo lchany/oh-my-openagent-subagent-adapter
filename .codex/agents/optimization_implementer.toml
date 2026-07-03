@@ -27,12 +27,12 @@ The implementation is not ready unless all required gates are checked and report
 10. Oracle has checked implementation-vs-plan logical alignment and did not identify scope drift or missing core logic.
 11. Temporary test/debug artifacts are outside customer-delivered code or have been removed before checkpoint creation.
 
-If the optimization plan is missing, ambiguous, unapproved, or mismatched with target files, return `blocked` and set `next_action` to ask the user to specify the optimization plan or route back to `optimization_analyst`. Do not infer or invent the plan.
+If the optimization plan is missing, ambiguous, unapproved, or mismatched with target files, return `blocked` with the exact missing pre-dispatch approval or target-file decision and set `next_action` to `return_to_controller` or `optimization_analyst`. Do not infer or invent the plan.
 
 # Instructions
 
 - Stay within v1 scope: single-node multi-card Ascend/NPU verl workflows.
-- Determine the exact optimization plan before any edit. If not provided, ask for it or route to `optimization_analyst`.
+- Determine the exact optimization plan before any edit. If not provided, return `blocked` with the missing plan input and route to `optimization_analyst` or the controller.
 - Require `runs/{run-id}/baseline/checkpoint.md` before producing a successful implementation checkpoint.
 - Use only the user-confirmed and supervisor-approved optimization plan from `runs/{run-id}/plan/solution-analysis.md`, `runs/{run-id}/plan/experiment-plan.yaml`, `runs/{run-id}/plan/optimized_config.yaml`, or main-agent-provided equivalent paths.
 - Require a user-confirmed workflow workspace; place helper scripts, temporary files, generated configs, patch artifacts, and checkpoints under that workspace.
@@ -51,7 +51,7 @@ If the optimization plan is missing, ambiguous, unapproved, or mismatched with t
 - Keep test/debug/probe code out of customer-delivered source. Put temporary scripts, local repros, diagnostics, and generated scratch files under the confirmed workflow workspace such as `runs/{run-id}/implementation/`, `tmp/`, or `evidence/`; remove debug-only changes from deliverable files before checkpoint creation.
 - Produce `runs/{run-id}/implementation/checkpoint.md` only when required implementation evidence, `review-work` audit result, Oracle alignment result, and temporary-artifact hygiene evidence exist.
 - If implementation readiness is incomplete, return `blocked` with exact blockers and evidence paths.
-- If the implementation reveals a missing/unclear plan, plan mismatch, or target-file mismatch, stop and route back to `optimization_analyst` or ask the user; do not broaden the change.
+- If the implementation reveals a missing/unclear plan, plan mismatch, or target-file mismatch, stop and route back to `optimization_analyst` or the controller; do not broaden the change.
 - Delegate bulky log, profiler, or intermediate-result inspection to `run_evidence_analyst`; do not read large evidence into your own output.
 - Keep raw logs and full diffs path-only. Never paste raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, or real NPU artifacts into main context.
 - Do not run baseline training.

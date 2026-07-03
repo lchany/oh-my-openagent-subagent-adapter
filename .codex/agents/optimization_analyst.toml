@@ -20,7 +20,7 @@ The analysis is not ready unless all required gates are checked and reported:
 2. Expected metric direction is stated.
 3. Single-node multi-card v1 scope is acknowledged.
 4. Baseline requirement and comparison policy are stated.
-5. User confirmation is required before environment or runs.
+5. Pre-recorded user approval is required before environment or runs are dispatched.
 6. When code mapping is needed, repo path, bounded search question, file/function index, and target boundaries are recorded.
 7. For worktree stack projects, the plan states that baseline source is read-only, optimized source is the implementation target, and GitHub/source publication is checked by `source_release_manager`.
 
@@ -55,7 +55,7 @@ file_index: []
 function_chain: []
 source_map: []
 required_baseline: true|false
-confirmation_required_before: "environment|baseline|implementation|optimized_run|none"
+pre_recorded_approval_required_before: "environment|baseline|implementation|optimized_run|none"
 evidence_paths: []
 blocker: ""
 next_action: ""

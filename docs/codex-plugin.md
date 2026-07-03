@@ -103,6 +103,8 @@ If `multi_agent_v2` is not enabled in user config, add `--enable multi_agent_v2`
 
 The Codex workflow supports VERL projects where GitHub branches are the source of truth, local git worktrees hold the management, baseline, and optimized source trees, and a stack wrapper switches the runtime source tree inside training containers.
 
+This mode assumes the user has already chosen the optimization plan, identified the modules likely to change, implemented or supervised the optimized code, and placed baseline and optimized code under git worktree management. The workflow then runs the controlled experiment rather than inventing the optimization.
+
 Expected project shape:
 
 ```text
@@ -117,14 +119,34 @@ Expected project shape:
 <optimized-source-worktree>/
 ```
 
-In this mode, the workflow uses `source_release_manager` before runner phases. It verifies branch names, commits, worktree cleanliness, GitHub publication state when required, baseline absence markers, optimized presence markers, and the approved runtime switch/train wrapper contract. Runners then consume that source checkpoint and must launch through `trainctl.py`; they must not directly invoke `container_train_*.sh` when `trainctl.py` exists.
+In this mode, `verl_npu_env_builder` performs the pre-run gate for each variant: model path, dataset path, inventory, container readiness, training/Ray scripts, and runtime switching through `switch_stack.py`. Runners then launch through `trainctl.py`; they must not directly invoke `container_train_*.sh` when `trainctl.py` exists. After each successful runner phase, `source_release_manager` records and publishes, when authorized, the validated training/Ray script state and source commit state for that variant.
+
+Default topology order:
+
+```text
+single-node baseline env+run+publish
+single-node optimized env+run+publish
+single-node comparison
+dual-node baseline env+run+publish
+dual-node optimized env+run+publish
+dual-node comparison
+four-node baseline env+run+publish
+four-node optimized env+run+publish
+four-node comparison
+final report
+```
 
 Minimal work-order fields:
 
 ```yaml
 source_release:
   remote: "git@github.com:lchany/hw-gitworktree-baseline-optimized.git"
-  sync_policy: "verify_only"
+  sync_policy: "push_allowed"
+  publish_training_scripts_after_success: true
+  publish_scope:
+    - "training_scripts"
+    - "ray_scripts"
+    - "approved_source_changes"
   management:
     branch: "main"
     worktree: "/mnt/disk2t/l30002999/hw-gitworktree-baseline-optimized"
@@ -145,9 +167,31 @@ worktree_stack:
     baseline: "baseline"
     optimized: "optimized-v4"
   runtime_target: "/vllm-workspace/verl"
+permissions:
+  non_interactive: true
+  ask_user_during_phase: false
+  allow_environment_checks: true
+  allow_runtime_switch: true
+  allow_training_launch: true
+  allow_debug_within_scope: true
+  allow_git_commit: true
+  allow_git_push: true
+  git_push_scope:
+    - "training_scripts"
+    - "ray_scripts"
+    - "approved_source_changes"
 ```
 
-Use `sync_policy: verify_only` unless the current user instruction explicitly allows pull, fetch, or push. If publication must be performed, use `push_allowed` only for that phase and record the authorization in the work-order.
+Subagents run non-interactively from the permission envelope. If a permission is missing, the phase blocks before dispatch; subagents must not request mid-phase user confirmation.
+
+Use `sync_policy: push_allowed` or `full_sync_allowed` when validated training/Ray scripts or explicitly approved source changes should be synchronized to GitHub after successful runs. With `permissions.allow_git_push: true`, `source_release_manager` performs the scoped push without another user prompt. Publication artifacts are variant-specific:
+
+```text
+runs/{run-id}/source/baseline/source-checkpoint.yaml
+runs/{run-id}/source/optimized/source-checkpoint.yaml
+```
+
+Only training scripts, Ray startup scripts, and explicitly approved source changes are eligible for GitHub commit/push. Intermediate workflow results such as `runs/`, logs, metrics summaries, checkpoints, debug evidence, generated reports, local memory files, datasets, and model files stay local.
 
 ## Updating
 

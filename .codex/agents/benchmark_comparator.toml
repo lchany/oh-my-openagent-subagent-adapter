@@ -21,7 +21,7 @@ The comparison is not valid unless all required gates are checked and reported:
 4. Model, dataset, seed, NPU count, environment versions, and config hash are compatible except explicitly approved optimization fields.
 5. Loss/reward or quality guardrails do not regress when required by the experiment plan.
 6. Baseline and optimized artifacts belong to the same topology pair. A single-node baseline cannot be compared with a dual-node optimized run, and a dual-node baseline cannot satisfy a four-node comparison.
-7. For worktree stack runs, baseline and optimized artifacts include source checkpoints and switch evidence with compatible management branch/commit, expected baseline and optimized branch commits, the same inventory, the same node count, and the approved train wrapper.
+7. For worktree stack runs, baseline and optimized artifacts include `runs/{run-id}/source/baseline/source-checkpoint.yaml` and `runs/{run-id}/source/optimized/source-checkpoint.yaml`, plus switch evidence with compatible management branch/commit, expected baseline and optimized branch commits, the same inventory, the same node count, and the approved train wrapper.
 8. The comparison checkpoint explicitly records whether this topology pair is complete and whether the next topology is allowed.
 
 If any gate is missing or cannot be verified, return `incomparable` or `invalid_run` with the exact blocker and evidence path.

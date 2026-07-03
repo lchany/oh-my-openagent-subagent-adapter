@@ -37,10 +37,35 @@ When dispatching, tell the subagent:
 - the expected phase and role
 - the run id, topology, work-order path, and relevant artifact paths
 - the exact allowed and forbidden actions
+- the non-interactive permission envelope for the phase
 - to return bounded summaries and artifact paths, not raw logs or dense output
 - to preserve evidence under `runs/{run-id}/`
 
-Do not let phase agents directly hand off to each other. The controller receives each result, then spawns `workflow-supervisor` to audit it before advancing.
+Do not let phase agents directly hand off to each other. The controller receives each result, then spawns `workflow_supervisor` to audit it before advancing.
+
+## Subagent Permission Envelope
+
+Workflow subagents must run without mid-phase user confirmations. The controller must decide and record the allowed actions in the work-order before dispatch. If the allowed action envelope is missing, too narrow, or unsafe, block before spawning the subagent instead of spawning it and requiring a later user prompt.
+
+Required work-order fields for non-interactive execution:
+
+```yaml
+permissions:
+  non_interactive: true
+  ask_user_during_phase: false
+  allow_environment_checks: true
+  allow_runtime_switch: true
+  allow_training_launch: true
+  allow_debug_within_scope: true
+  allow_git_commit: true
+  allow_git_push: true
+  git_push_scope:
+    - "training_scripts"
+    - "ray_scripts"
+    - "approved_source_changes"
+```
+
+`allow_git_push: true` authorizes only `source_release_manager` to push the approved publish scope after successful variant runs. Other agents must not push. Destructive source history operations, broad cleanup, deleting datasets/models, deleting containers, and pushing generated run evidence remain forbidden unless the user explicitly expands the scope.
 
 ## Active Agents
 
@@ -86,29 +111,29 @@ Default phase order:
 optimization_analyst
 -> workflow_supervisor
 -> context_curator
--> verl_npu_env_builder
--> workflow_supervisor
--> source_release_manager
+-> verl_npu_env_builder      # baseline environment, scripts, and runtime switch
 -> workflow_supervisor
 -> baseline_runner
 -> workflow_supervisor
--> optimization_implementer
+-> source_release_manager    # publish baseline training/Ray script state
 -> workflow_supervisor
--> source_release_manager
+-> verl_npu_env_builder      # optimized environment, scripts, and runtime switch
 -> workflow_supervisor
 -> optimized_runner
+-> workflow_supervisor
+-> source_release_manager    # publish optimized training/Ray script state
 -> workflow_supervisor
 -> benchmark_comparator
 -> workflow_supervisor
 -> experiment_reporter
 ```
 
-For multi-topology experiments, complete each topology pair before starting the next:
+For multi-topology experiments, complete each topology pair before starting the next. Within each topology, complete baseline environment/switch/run/publish before optimized environment/switch/run/publish:
 
 ```text
-single-node baseline+optimized+comparison
--> dual-node baseline+optimized+comparison
--> four-node baseline+optimized+comparison
+single-node baseline env+run+publish, optimized env+run+publish, comparison
+-> dual-node baseline env+run+publish, optimized env+run+publish, comparison
+-> four-node baseline env+run+publish, optimized env+run+publish, comparison
 ```
 
 The next topology is allowed only after the current topology has a successful baseline, successful optimized run, comparison checkpoint, and supervisor approval, unless the user explicitly records a skip.
@@ -139,7 +164,7 @@ Block and do not advance when any of these conditions occur:
 - `non_workflow_agent`: the selected role is outside the allowlist.
 - `main_agent_substitution`: the result does not prove a specialized workflow agent ran.
 - `archive_gate_required`: a verified root cause/fix lacks archive review.
-- `source_release_gate_required`: baseline or optimized source checkpoint is missing, unapproved, dirty, branch-mismatched, unpublished when publication is required, or inconsistent with the runtime switch contract.
+- `source_release_gate_required`: baseline or optimized source/publication checkpoint is missing, unapproved, dirty, branch-mismatched, unpublished when publication is required, or inconsistent with the runtime switch contract.
 - `preflight_gate_required`: runner preflight artifacts are missing or invalid.
 - `direct_training_launch`: training was launched outside the workspace gate wrapper.
 - `direct_runtime_switch`: source was copied into the runtime tree outside the approved worktree stack switch script.
@@ -153,10 +178,12 @@ For any routing blocker, discard the returned phase output as invalid evidence. 
 
 Use this mode when a VERL project stores orchestration on a management branch and stores baseline and optimized full source trees on separate GitHub branches backed by local git worktrees. A project enters this mode when the work-order provides `source_release` and `worktree_stack`, or when project discovery finds `stack.json`, `scripts/switch_stack.py`, and `scripts/trainctl.py`.
 
+This mode assumes the user has already chosen the optimization plan, identified the modules likely to change, and prepared baseline/optimized code under git worktree management. During normal execution the workflow does not invent the optimization plan or implement new optimization code. It validates environment readiness, switches the runtime to the requested variant, runs training, publishes validated training/Ray script state to GitHub when authorized, compares results, and reports.
+
 In this mode GitHub is the publication and restore source of truth, local worktrees are the source trees, and the container runtime tree is only a synchronized runtime target. The workflow must prove consistency across all three layers before training:
 
-- GitHub branches and local worktrees: verified by `source_release_manager`.
-- Runtime target such as `/vllm-workspace/verl`: selected only by the approved switch script.
+- GitHub branches and local worktrees: verified and published by `source_release_manager` after successful variant runs.
+- Runtime target such as `/vllm-workspace/verl`: selected by `verl_npu_env_builder` only through the approved switch script.
 - Training launch: started only by the approved gate wrapper, normally `scripts/trainctl.py`.
 
 The controller must include these fields in the work-order before dispatching source, runner, implementation, or comparison phases:
@@ -165,6 +192,11 @@ The controller must include these fields in the work-order before dispatching so
 source_release:
   remote: "<git remote url>"
   sync_policy: "verify_only|pull_allowed|push_allowed|full_sync_allowed"
+  publish_training_scripts_after_success: true
+  publish_scope:
+    - "training_scripts"
+    - "ray_scripts"
+    - "approved_source_changes"
   management:
     branch: "<management branch>"
     worktree: "<management worktree>"
@@ -189,7 +221,11 @@ worktree_stack:
 
 Workflow agents must not collapse baseline and optimized behavior into one runtime source tree, must not use environment variables as the baseline/optimized switch, and must not manually copy arbitrary source files into the runtime target. If `trainctl.py` exists, runners must use it; direct invocation of variant `container_train_*.sh` is invalid unless the work-order explicitly names a different gate wrapper.
 
-`source_release_manager` must produce `runs/{run-id}/source/source-checkpoint.yaml` before baseline or optimized runner phases. The checkpoint must record management, baseline, and optimized commits; branch names; worktree cleanliness; publication status allowed by `sync_policy`; baseline optimization-code absence; optimized-code presence; and the exact runtime switch and train wrapper contract that downstream agents must use.
+`verl_npu_env_builder` must produce variant-specific environment/switch evidence before each runner phase. It must verify model path, dataset path, inventory, training/Ray scripts, container readiness, source worktree cleanliness, and runtime switch evidence for the requested variant. If a required training or Ray script is missing, it may create or repair only the management-worktree script under the approved stack path and must record that change.
+
+`source_release_manager` must produce variant-specific publication artifacts after each successful runner phase. Use `runs/{run-id}/source/baseline/` for baseline and `runs/{run-id}/source/optimized/` for optimized. The checkpoint must record management, baseline, and optimized commits; branch names; worktree cleanliness; publication status allowed by `sync_policy`; baseline optimization-code absence; optimized-code presence; validated training/Ray script paths; and the exact runtime switch and train wrapper contract used for the completed run.
+
+Only training scripts, Ray startup scripts, and explicitly approved source changes may be committed or pushed by the workflow. Intermediate workflow artifacts such as `runs/`, logs, metrics summaries, checkpoints, debug evidence, generated reports, local project memory, and dense command output stay local and must not be synchronized to GitHub by any subagent.
 
 ## Verified RCA Archive Gate
 

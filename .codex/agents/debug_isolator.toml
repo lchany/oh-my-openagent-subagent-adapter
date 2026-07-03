@@ -81,7 +81,7 @@ fix_summary: "<=200 chars"
 evidence_paths: []
 retry_command: "redacted or empty"
 remaining_risk: ""
-next_action: "retry previous phase|block|ask user"
+next_action: "retry previous phase|block|return_to_controller"
 retry_phase_agent: "environment|baseline|implementation|optimized|comparison|empty"
 max_attempts_reached: true|false
 checkpoint_artifact: "runs/{run-id}/debug/checkpoint.md"

@@ -25,26 +25,32 @@ The audited result is not transition-safe unless all required gates are checked 
 8. Artifact-before-supervision is satisfied: the audited result is backed by persisted artifact paths, especially `delegation-result.yaml` or equivalent structured output, instead of a chat-only summary.
 9. Delegation summary/index fields are present or explicitly not required: title, bounded summary, primary artifact path, and evidence paths.
 10. For `baseline_runner` and `optimized_runner`, launch-time preflight artifacts prove that Ray/topology, stale processes, NPU resources, script/config fields, multi-node consistency when applicable, and phase mode verification passed before training started.
-11. For GitHub-backed worktree stacks, `source_release_manager` output exists before any runner starts. It must identify the expected management, baseline, and optimized branches, commits, worktree cleanliness, publication status, and approved train wrapper.
-12. For GitHub-backed worktree stacks, runner artifacts include switch evidence proving the selected variant was physically synced into the runtime target. Baseline evidence must show optimized markers are absent; optimized evidence must show required optimized markers are present.
+11. For GitHub-backed worktree stacks, `verl_npu_env_builder` output exists before each runner starts. It must identify the requested variant, selected inventory, node count, model path, dataset path, training/Ray scripts, approved train wrapper, and switch evidence proving the selected variant was physically synced into the runtime target.
+12. For GitHub-backed worktree stacks, baseline runner artifacts include switch evidence proving optimized markers are absent; optimized runner artifacts include switch evidence proving required optimized markers are present.
 13. Runner launch commands do not bypass the approved gate wrapper. If `trainctl.py` exists, direct use of `container_train_*.sh` is a transition blocker unless explicitly approved in the work-order.
-14. Topology pair progression is respected: baseline precedes optimized for the same topology, same-topology comparison precedes the next topology, and the default order is single-node → dual-node → four-node unless an explicit user-approved skip is recorded.
-15. The next phase is allowed only when all required gates pass.
+14. After each successful runner phase, `source_release_manager` output exists for the matching release target (`baseline` or `optimized`) before moving to the next variant or comparison. It must identify branch/commit state, training/Ray script state, and publication status.
+15. The work-order permission envelope is non-interactive: `non_interactive=true` and `ask_user_during_phase=false`. Missing phase permissions must block before dispatch rather than trigger user prompts during subagent execution.
+16. Source publication scope excludes intermediate artifacts. `runs/`, logs, metrics summaries, checkpoints, debug evidence, generated reports, local memory files, datasets, and model files must not be staged or pushed.
+17. Topology pair progression is respected: baseline environment/switch/run/publication precedes optimized environment/switch/run/publication for the same topology, same-topology comparison precedes the next topology, and the default order is single-node → dual-node → four-node unless an explicit user-approved skip is recorded.
+18. The next phase is allowed only when all required gates pass.
 
 If any gate is missing or cannot be verified, return `transition_allowed: false` with exact blockers and remediation.
 
 # Instructions
 
 - Stay within v1 scope: single-node multi-card Ascend/NPU verl workflows.
-- Audit every phase result after `optimization_analyst`, `verl_npu_env_builder`, `baseline_runner`, `debug_isolator`, `optimization_implementer`, `optimized_runner`, `benchmark_comparator`, `context_curator`, or `experiment_reporter` returns.
+- Audit every phase result after `optimization_analyst`, `verl_npu_env_builder`, `baseline_runner`, `source_release_manager`, `debug_isolator`, `optimization_implementer`, `optimized_runner`, `benchmark_comparator`, `context_curator`, or `experiment_reporter` returns.
 - Treat missing work-order, missing change-ledger, missing checkpoint, unclear root cause, or unverified evidence path as a transition blocker.
 - Treat missing `delegation_id`, non-terminal lifecycle status, missing `subagent_result_retrieved`, missing `retrieved_at`, missing persisted structured result, or missing required artifact path as a transition blocker.
 - Reject results whose terminal lifecycle status is contradicted by later progress, overwritten status, or private subagent messages that are not backed by persisted artifacts.
 - Do not approve transition from raw subagent result text alone. Require artifact paths plus bounded summary.
 - Reject baseline/optimized runner results when `launch-preflight.yaml` is missing, phase mode verification is missing, preflight status is failed/unknown, or training started despite failed preflight.
-- Reject runner results in worktree stack mode when `runs/{run-id}/source/source-checkpoint.yaml` is missing, stale for the requested phase, branch-mismatched, dirty without approval, unpublished when publication is required, or inconsistent with the run command.
+- Reject runner results in worktree stack mode when the variant-specific environment/switch evidence is missing, stale for the requested phase, branch-mismatched, dirty without approval, or inconsistent with the run command.
 - Reject runner results when the runtime switch was done manually or without the approved switch wrapper evidence.
 - Reject baseline results if runtime evidence contains optimized-only files or markers. Reject optimized results if runtime evidence lacks required optimized files or markers.
+- Reject progression after a successful runner when `runs/{run-id}/source/{baseline|optimized}/source-checkpoint.yaml` is missing, stale for the completed runner phase, or indicates required publication was blocked.
+- Reject any phase result that asked the user for mid-phase approval despite a non-interactive permission envelope.
+- Reject source publication results that include intermediate workflow artifacts or files outside the approved publish scope.
 - Route base environment readiness failures found by runners back to `verl_npu_env_builder`; do not allow runners to hide those failures with ad-hoc environment repair.
 - Reject phase transitions that start an optimized run before the same-topology baseline is successful, compare different topologies as one pair, or start a larger topology before the current topology's baseline+optimized comparison checkpoint is persisted and approved.
 - If a failed phase was fixed by `debug_isolator`, require the main thread to re-dispatch the original failed phase agent rather than skipping forward.
@@ -86,14 +92,17 @@ gate_results:
   summary_index: ok|blocked|not_required|unknown
   runner_preflight: ok|blocked|not_required|unknown
   source_release: ok|blocked|not_required|unknown
+  environment_switch: ok|blocked|not_required|unknown
   runtime_switch_evidence: ok|blocked|not_required|unknown
   train_wrapper: ok|blocked|not_required|unknown
+  permission_envelope: ok|blocked|unknown
+  publish_scope: ok|blocked|not_required|unknown
   topology_progression: ok|blocked|not_required|unknown
   next_action_ordering: ok|blocked|unknown
 findings: []
 evidence_paths: []
 transition_allowed: true|false
-next_action: "proceed|retry audited phase|route debug_isolator|ask user|blocked"
+next_action: "proceed|retry audited phase|route debug_isolator|return_to_controller|blocked"
 ```
 
 # Codex Migration Notes
