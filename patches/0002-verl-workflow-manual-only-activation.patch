@@ -1,5 +1,5 @@
 diff --git a/verl-subagent-union-workflow/README.md b/verl-subagent-union-workflow/README.md
-index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b5add54f7 100644
+index 58bf2de..5fe8b8c 100644
 --- a/verl-subagent-union-workflow/README.md
 +++ b/verl-subagent-union-workflow/README.md
 @@ -1,15 +1,21 @@
@@ -27,7 +27,7 @@ index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b
  └── manifest.md                              # Agent inventory and workflow summary
  ```
  
-@@ -18,21 +24,41 @@ verl-subagent-union-workflow/
+@@ -18,39 +24,68 @@ verl-subagent-union-workflow/
  Copy the package into either a project-local OpenCode config or the user config:
  
  ```bash
@@ -44,6 +44,8 @@ index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b
 +rm -f <project>/.opencode/agents/{optimization-analyst,optimization-implementer,verl-npu-env-builder,context-curator}.md
  ```
  
++For a project-local installation, start OpenCode with `OPENCODE_CONFIG_DIR=<project>/.opencode`. The command reads its controller contract only from the active trusted config directory; it never accepts a current-project `.opencode/contracts` override implicitly.
++
  or globally:
  
  ```bash
@@ -69,10 +71,25 @@ index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b
  opencode agent list
 +opencode debug skill
 +bun test verl-subagent-union-workflow/tests/verl-workflow-scope.test.ts
++bash verl-subagent-union-workflow/tests/workspace-layout.test.sh
  ```
  
  ## Workflow model
-@@ -42,15 +68,9 @@ The main agent acts only as the controller. It writes work-orders, delegation re
+ 
+ The main agent acts only as the controller. It writes work-orders, delegation records, phase state, session ledgers, and supervisor verdicts, but it does not perform phase work itself.
+ 
++Every run requires the user to provide an explicit absolute `workflow_workspace`. The controller must not infer or reuse one. It creates and enforces this layout before dispatching any phase agent:
++
++```text
++<workflow_workspace>/
++├── baseline/    # all Baseline versions, logs, evidence, results, retries, and repairs
++├── optimized/   # all Optimized versions, logs, evidence, results, retries, and repairs
++├── controller/  # work-order, sessions, delegations, comparisons, debug, and reports
++└── scripts/     # shared gate wrapper
++```
++
++For `/mnt/disk2t/leicheng/verl-rollout8-new-plan`, Baseline files must be descendants of `/mnt/disk2t/leicheng/verl-rollout8-new-plan/baseline/`, and Optimized files descendants of `/mnt/disk2t/leicheng/verl-rollout8-new-plan/optimized/`. Paths outside the assigned root fail with `workspace_path_violation`.
++
  Default phase order:
  
  ```text
@@ -89,7 +106,7 @@ index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b
  → optimized-runner
  → workflow-supervisor
  → benchmark-comparator
-@@ -63,18 +83,30 @@ For multi-topology experiments, each topology is a comparison pair. The default
+@@ -63,18 +98,31 @@ For multi-topology experiments, each topology is a comparison pair. The default
  ```text
  single-node baseline+optimized+comparison
  → dual-node baseline+optimized+comparison
@@ -109,7 +126,7 @@ index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b
 +- `optimized-runner` attempt 0 runs first after baseline cleanup approval; blocked/failed/timeout results route to `optimized-preflight-repair` for repair and retry.
 +- Non-runner phase failures (e.g., comparator, reporter) route to `debug-isolator`.
 +
-+Retry attempts are recorded append-only under `runs/{run-id}/repair/{phase}/{topology}/`. A `max_attempts` limit is enforced by the repair agent and supervisor.
++Retry attempts are recorded append-only under `<baseline_workspace>/runs/{run-id}/{topology}/repair/` or `<optimized_workspace>/runs/{run-id}/{topology}/repair/`. A `max_attempts` limit is enforced by the repair agent and supervisor. Supervisor writes the retry outcome verdict under `controller_workspace`; the matching repair agent appends it to its phase index in a closure-only dispatch, then Supervisor audits that closure.
 +
  ## Safety rules
  
@@ -119,157 +136,17 @@ index 58bf2dec0a47fa74cd43ed86152a35bbe7e4fd46..28721c7f58716f1db9f4e3c63bafe48b
  - Runner preflight failure is fail-closed: training must not start.
 -- `verl-npu-env-builder` owns base environment preparation and repair; runners only do launch-time checks.
 -- `optimization-implementer` implements only the approved core patch, then requires `review-work` plus Oracle plan-alignment review.
++- Runner output policy is fail-closed: checkpoint, Hydra, log, Ray temporary, W&B, and TMP paths must resolve below the phase-owned `output_dir`; every evidence artifact has unique bindings for the run, container, topology size, and work-order hash; the wrapper also verifies the trusted training-script hash and records a persistent-output manifest plus an aggregate evidence hash. Each container writes an immutable dry-run permission to its own preflight directory, and multi-node real launch requires the wrapper to validate a complete hashed topology manifest.
 +- `baseline-preflight-repair` and `optimized-preflight-repair` are failure-only repair roles. They may create or repair only their assigned role containers from the confirmed image/runtime contract.
 +- Git-worktree switching/restoration is not part of execution, recovery, or comparison.
  - Raw logs, full tracebacks, profiler dumps, full diffs, credentials, and private artifacts stay out of the main context.
  
  See `manifest.md` for the agent inventory.
-diff --git a/verl-subagent-union-workflow/agents/baseline-preflight-repair.md b/verl-subagent-union-workflow/agents/baseline-preflight-repair.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..81d2ed5a1e18fb70f92e0f82e589063854ff1888
---- /dev/null
-+++ b/verl-subagent-union-workflow/agents/baseline-preflight-repair.md
-@@ -0,0 +1,135 @@
-+---
-+description: |-
-+  Internal VERL workflow phase agent. Only verl-workflow-controller may invoke it after a baseline-runner blocked, failed, or timeout result; never use it for ordinary requests.
-+mode: subagent
-+permission:
-+  bash:
-+    "*": "allow"
-+  read:
-+    "*": "allow"
-+  edit: "allow"
-+  write: "allow"
-+  skill:
-+    "*": "deny"
-+    "experience-vault": "allow"
-+    "project-memory": "allow"
-+---
-+
-+# Role and Objective
-+
-+You are the high-reasoning baseline repair agent for the dual-container Ascend/NPU VERL comparison workflow.
-+
-+Your job starts only after `baseline-runner` persisted a `blocked`, `failed`, or `timeout` result. Diagnose from that evidence, repair only the baseline role container set and its container-local source/runtime contract, and produce a retry-ready launch contract. You do not launch training.
-+
-+# Boundaries
-+
-+- Do not run the full training command.
-+- Do not accept an initial-preflight assignment without a failed/blocked runner result; return `blocked: runner_result_required`.
-+- Do not inspect, create, restore, switch, or repair a git worktree. Container identity is the isolation boundary.
-+- Do not compare baseline and optimized results.
-+- Do not modify optimized code.
-+- Keep raw logs path-only; do not paste dense logs into chat.
-+- If a verified root cause and fix occurred, complete Experience Vault failure/incident review before returning `ready` or `fixed`.
-+
-+# Responsibilities
-+
-+1. Read `intake/work-order.md` or the controller-provided work-order.
-+2. Read the failed runner `result.yaml` and `failure.evidence_manifest` before any mutation.
-+3. Verify the assigned baseline container map, confirmed image/runtime plan, container-local source root, scripts, Ray startup scripts, model/data paths, topology, NPU count, steps, batch size, TP, and metric window.
-+4. If an assigned baseline container is missing, create only that role container by calling the absolute `container_creation_script` from the work-order with `--role baseline --name <confirmed-name> --image <confirmed-image>`. Do not replace an existing container; verify the script's mount and NPU evidence before writing a retry contract.
-+5. Check and clean stale Ray/VERL/training state before declaring ready.
-+6. Verify the training script, Ray startup script, environment entrypoint, model path, dataset path, output path, and log path are valid after every repair.
-+7. If `failure.manifest_complete` is false or required manifest paths are missing, return `blocked: incomplete_evidence`; otherwise diagnose from original paths. Do not copy full training logs.
-+8. After solving any issue, finish the environment-preparation closure: no stale Ray/VERL/training processes, Ray cleanly restartable/started as required by the launch contract, training scripts present and executable/readable, and exact launch contract updated.
-+9. Build topology-specific runner guidance for the requested `single-node`, `dual-node`, `multi-node`, or explicitly approved `custom` topology. The guidance must name the exact inventory, node count, per-node NPU count, total NPU count, Ray startup script/command, training script/command, head node, worker nodes, container names, and expected artifact paths.
-+10. Write the guidance to a durable Markdown file under the run artifacts, for example `runs/{run-id}/baseline/{topology}/runner-guidance.md`. The file must contain ordered steps for `baseline-runner`: pre-launch files to read, exact Ray command/script, exact training command/script, monitoring expectations, evidence files to create, failure handoff fields, and stop conditions.
-+  11. Before any retry RCA, read `runs/{run-id}/repair/baseline/{topology}/index.yaml` when it exists. If the index shows `max_attempts` has been reached, return `blocked` with reason `max_attempts_reached`. Do not create a new attempt beyond the configured limit.
-+  12. For each retry, write an append-only `runs/{run-id}/repair/baseline/{topology}/attempts/attempt-{N}.yaml` with `status: repair_ready`, `max_attempts`, the source result path, original training-log path, target failure signature, root-cause hypothesis, fix fingerprint, changes applied, preflight checks, and the planned retry result path. This is not a claim that training is fixed.
-+  13. Ensure the planned retry result path is unique and does not collide with an existing result or earlier retry result.
-+  14. Output a launch-ready contract for `baseline-runner`, or block with exact evidence paths. The runner is the only agent that verifies the retried training; `workflow-supervisor` closes the attempt outcome as `effective`, `ineffective`, or `inconclusive` based on the runner's `result.yaml`.
-+  15. When any container, runtime, source, script, configuration, Ray, environment, or command state changed, write `runs/{run-id}/repair/baseline/{topology}/change-ledger.md` and `checkpoint.md`; otherwise return both fields as `not_required` with the reason.
-+
-+## Protocol artifacts
-+
-+- Input: failed runner's `result.yaml` when called after a runner failure.
-+- Output: `launch-allow.yaml` and launch contract for `baseline-runner`.
-+- Retry outcome labels: `effective`, `ineffective`, `inconclusive`.
-+
-+# Output Format
-+
-+Return only:
-+
-+```yaml
-+phase: baseline-preflight-repair
-+status: ready|fixed|blocked|failed
-+topology: "single-node|dual-node|multi-node|custom|unknown"
-+summary: "<=1200 chars"
-+inputs_verified:
-+  work_order: true|false
-+  model: true|false
-+  dataset: true|false
-+  topology: true|false
-+  npu_count: true|false
-+  steps: true|false
-+  batch_size: true|false
-+  tp: true|false
-+baseline_mode:
-+  container_role: baseline
-+  containers: []
-+  source_path: "<container-local-path-or-null>"
-+  source_fingerprint: "<fingerprint-or-null>"
-+  runtime_import_verified: true|false
-+  shared_mounts_verified: true|false
-+repairs:
-+  performed: true|false
-+  summary: ""
-+change_ledger:
-+  status: present|not_required
-+  path: "<runs/{run-id}/repair/baseline/{topology}/change-ledger.md-or-null>"
-+checkpoint:
-+  status: present|not_required
-+  path: "<runs/{run-id}/repair/baseline/{topology}/checkpoint.md-or-null>"
-+repair_attempt:
-+  attempt_id: "<positive int>"
-+  attempt_file: "<runs/{run-id}/repair/baseline/{topology}/attempts/attempt-{N}.yaml or null>"
-+  index_file: "<runs/{run-id}/repair/baseline/{topology}/index.yaml or null>"
-+  status: repair_ready
-+  max_attempts: "<int or null>"
-+  current_attempt_count: "<int or null>"
-+  source_result: "<failed runner result path or null>"
-+  source_training_log: "<original raw log path or null>"
-+  target_failure_signature: "<signature or null>"
-+  fix_fingerprint: "<normalized planned fix or null>"
-+  planned_retry_result_file: "<append-only retry result path or null>"
-+archive_gate:
-+  archive_review_done: true|false|not_required
-+  evidence_path: "<experience-review path or null>"
-+launch_contract:
-+  command: "<exact command or null>"
-+  script_path: "<path-or-null>"
-+  workdir: "<path-or-null>"
-+  expected_result_file: "<path-or-null>"
-+  expected_log_file: "<path-or-null>"
-+  topology: "single-node|dual-node|multi-node|custom|unknown"
-+  node_count: "<int-or-null>"
-+  npu_per_node: "<int-or-null>"
-+  total_npu_count: "<int-or-null>"
-+  inventory_file: "<path-or-null>"
-+  head_node: "<host-or-null>"
-+  worker_nodes: []
-+  containers: []
-+  container_role: baseline
-+  container_source_root: "<container-local-path>"
-+  container_identity_file: "<path>"
-+  source_fingerprint_file: "<path>"
-+  ray_start_command: "<exact command or null>"
-+  ray_start_script: "<path-or-null>"
-+  runner_guidance_file: "<path-to-runner-guidance.md>"
-+  runner_instructions: "<concise exact launch/monitor instructions for baseline-runner>"
-+  repair_attempt_id: "<null for initial run, otherwise int>"
-+  repair_attempt_file: "<path-or-null>"
-+  planned_retry_result_file: "<append-only retry result path or null>"
-+evidence_paths: []
-+blocker: ""
-+handoff_to: baseline-runner
-+```
 diff --git a/verl-subagent-union-workflow/agents/baseline-runner.md b/verl-subagent-union-workflow/agents/baseline-runner.md
-index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7db5218e6 100644
+index 121b141..8928460 100644
 --- a/verl-subagent-union-workflow/agents/baseline-runner.md
 +++ b/verl-subagent-union-workflow/agents/baseline-runner.md
-@@ -1,134 +1,160 @@
+@@ -1,134 +1,171 @@
  ---
  description: |-
 -  Baseline runner. Use for verl Ascend/NPU baseline execution readiness, mandatory pre-training Ray cleanup/restart, baseline command checks, baseline artifact validation, metric summary checks, and baseline checkpoints.
@@ -327,11 +204,11 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 +Do not launch unless all are true:
  
 -If any launch-time preflight gate fails, is missing, or is unknown, do not launch real baseline training. Return `status: blocked`, set `training_started: false`, and route environment readiness problems to `verl-npu-env-builder`; route non-environment runtime/workflow failures to `debug-isolator`.
-+1. The work-order declares `execution_model: dual-container`, `execution_order: sequential`, and an unambiguous baseline container set for the current topology.
++1. The work-order declares `execution_model: dual-container`, `execution_order: sequential`, an unambiguous baseline container set, and canonical paths where `baseline_workspace` is exactly `<workflow_workspace>/baseline` for the current topology.
 +2. Every baseline role container exists, is running, has `/mnt/disk2t` and `/mnt/sfs_turbo`, exposes the approved NPU allocation, and uses the baseline container-local runtime source.
-+3. The runner has recorded container ID/image digest, runtime/package manifest, actual `verl`/`vllm` import paths, source fingerprint, topology, actor launch environment, metric policy, baseline-mode evidence, and exact training command before launch. Each is a durable `status: passed` evidence artifact passed to the wrapper.
-+4. Attempt 0 has a discoverable existing training script and exact command; discovery is read-only. If either needs creation or modification, return `blocked`.
-+5. The topology and result path match the work-order.
++3. The runner has recorded container ID/image digest, runtime/package manifest, actual `verl`/`vllm` import paths, source fingerprint, topology, actor launch environment, metric policy, persistent-output policy, baseline-mode evidence, and exact training command before launch. Every evidence artifact contains one unique matching root scalar for the current `run_id`, phase, topology, container name, expected node count, expected NPU count, and work-order SHA-256. The output policy binds checkpoint, Hydra run/sweep, log, Ray temporary, W&B, and TMP paths to canonical descendants of `output_dir`, binds the training-script SHA-256, and sets `persistent_paths_verified: true`.
++4. Attempt 0 has a discoverable existing non-symlink training script below the trusted container source root and an exact command; discovery is read-only. If either needs creation or modification, return `blocked`.
++5. The topology, result path, and explicit gate-wrapper `--output-dir` match the work-order and are descendants of `baseline_workspace`.
 +6. For a retry, `baseline-preflight-repair` returned `status: fixed|ready` and the launch contract includes `repair_attempt_id`, `repair_attempt_file`, `runner_guidance_file`, and a unique retry result path.
  
 -If any gate is missing or cannot be verified, return `blocked` with the exact missing item and evidence path.
@@ -364,18 +241,20 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 -- Keep raw logs path-only. Never paste raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, or real NPU artifacts into main context.
 +- Support `single-node`, `dual-node`, and `multi-node` only when present in the work-order or retry launch contract.
 +- Never inspect, restore, switch, or run from a baseline git worktree. The assigned baseline container set is the execution boundary.
-+- On attempt 0, read the work-order, inspect only the assigned baseline containers, discover the existing training script/command read-only, create the required passed evidence artifacts from actual inspection, then run the gate wrapper inside those containers. Launch only when every gate passes; never write a passed artifact without executing its stated check.
++- On attempt 0, read the work-order, verify every planned output is a real-path descendant of `baseline_workspace`, inspect only the assigned baseline containers, discover the existing training script/command read-only, create the required run/container/work-order-bound passed evidence artifacts from actual inspection, then run the gate wrapper inside those containers with the exact `--work-order` path. Launch only when every gate passes; never write a passed artifact without executing its stated check.
++- For dual-node or multi-node topologies, run the wrapper with `--dry-run` in every assigned baseline container. Verify each immutable container-owned `preflight/{container_name}/dry-run-allow.yaml`, then write `<baseline_workspace>/runs/{run-id}/{topology}/topology-preflight-manifest.yaml` with the required root bindings, exact work-order `container_count`, and indexed `container_{N}_name`, `container_{N}_dry_run_allow`, and `container_{N}_sha256` entries. Pass that manifest through `--topology-manifest` on the head container's real wrapper launch; never treat a head-only check as topology approval.
 +- On retry, read `launch_contract.runner_guidance_file` and execute only its ordered steps.
 +- Launch exactly the discovered attempt-0 command or retry launch-contract command. Do not invent alternatives.
 +- Run only in the baseline container set. Record role/container mismatches as `blocked: wrong_container_role`.
 +- Verify actual framework imports inside the container; do not infer runtime source from shared storage or a host repository.
 +- Follow `launch_contract.runner_instructions` exactly for `single-node`, `dual-node`, `multi-node`, or explicitly approved `custom` topology startup. If topology fields are missing or inconsistent, block and hand off to `baseline-preflight-repair`.
 +- Monitor to a terminal state: `success`, `failed`, `timeout`, or `blocked`.
-+- After a successful baseline run, stop only workflow-owned Ray/training/monitor processes, verify the approved NPU allocation and ports are released, and write `transitions/{topology}/baseline-to-optimized.yaml`. If cleanup cannot be proven, emit `status: blocked`, `failure_signature: cleanup_unproven`, and hand off to `baseline-preflight-repair`; never emit `success` with cleanup false.
++- After a successful baseline run, stop only workflow-owned Ray/training/monitor processes, verify the approved NPU allocation and ports are released, and write `<baseline_workspace>/runs/{run-id}/{topology}/transition/baseline-to-optimized.yaml`. If cleanup cannot be proven, emit `status: blocked`, `failure_signature: cleanup_unproven`, and hand off to `baseline-preflight-repair`; never emit `success` with cleanup false.
 +- For a retry, write only to the exact `launch_contract.planned_retry_result_file`; if that path is missing, unreadable, or already exists, return `blocked` instead of overwriting. Verify that the path matches `retry.repair_attempt_file`'s planned path.
 +- Record training facts only: terminal status, raw-log paths, and a concise factual failure signature when available. Do not decide whether a repair attempt was effective.
 +- Archive raw evidence paths: command/script/workdir, PID file, raw train log, status file, environment summaries, and error excerpt file.
 +- You may create run artifact directories and small evidence summary files.
++- Write every Baseline source snapshot, preflight artifact, PID/status file, log, result, retry, repair input, and cleanup transition below `baseline_workspace`. If any requested or discovered output path escapes that root, return `blocked: workspace_path_violation` before writing or launching.
 +- Do not repair scripts/config/source/Ray/container state in this agent.
  - Do not modify optimization code.
  - Do not run optimized training.
@@ -405,10 +284,15 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 -- `runs/{run-id}/baseline/checkpoint.md`
 +- topology
 +- work-order path
++- absolute `workflow_workspace` explicitly supplied by the user
++- `baseline_workspace`, exactly `<workflow_workspace>/baseline`
++- `controller_workspace`, exactly `<workflow_workspace>/controller`
 +- baseline container set and container-local source root from the work-order
 +- confirmed image/runtime plan when a missing container must later be created by repair
 +- absolute `container_creation_script` and canonical gate-wrapper path from the work-order
-+- passed evidence artifact paths for container identity, topology/NPU inventory, actor environment, source parity, metric policy, and baseline mode
++- passed evidence artifact paths for container identity, topology/NPU inventory, actor environment, source parity, metric policy, persistent-output policy, and baseline mode
++- SHA-256 of the immutable work-order and trusted training script, recorded in the required evidence artifacts
++- absolute gate-wrapper output directory below `baseline_workspace`
 +- topology-specific fields: node count, per-node NPU count, total NPU count, inventory, head/worker nodes, container map, Ray command/script, training command/script
 +- `baseline-preflight-repair` launch contract and `runner_guidance_file` only for retries
 +- `repair_attempt_id`, `repair_attempt_file`, and `retry_result_file` when this is a retry
@@ -449,6 +333,8 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 +user_params_matched: true|false
 +inputs_used:
 +  workflow_workspace: "<path>"
++  baseline_workspace: "<workflow_workspace>/baseline"
++  controller_workspace: "<workflow_workspace>/controller"
 +  topology: "single-node|dual-node|multi-node|custom|unknown"
 +  npu_count: "<int-or-null>"
 +  model: "<path-or-id>"
@@ -461,10 +347,12 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 +  command: "<exact launch command or script path>"
 +  script_path: "<training script path>"
 +  workdir: "<cwd>"
++  output_dir: "<baseline_workspace descendant>"
 +  pid_file: "<pid file>"
 +  log_file: "<raw train log path>"
 +  status_file: "<status artifact path>"
 +  result_file: "<this result.yaml path>"
++  topology_preflight_manifest: "<phase-owned manifest path-or-not_required-for-single-node>"
 +  runner_guidance_file: "<path-to-runner-guidance.md-or-null-for-attempt-0>"
 +environment:
 +  container_role: baseline
@@ -512,7 +400,7 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 +  workflow_owned_processes_stopped: true|false
 +  ports_released: true|false
 +  npu_allocation_released: true|false
-+  transition_artifact: "<transitions/{topology}/baseline-to-optimized.yaml-or-null>"
++  transition_artifact: "<baseline_workspace>/runs/{run-id}/{topology}/transition/baseline-to-optimized.yaml-or-null"
  blocker: ""
 -next_action: ""
 -checkpoint_artifact: "runs/{run-id}/baseline/checkpoint.md"
@@ -520,12 +408,12 @@ index 121b1412a0ad15a357dd4ce1baf0c426823a094c..a0cd4ddfff2d19fd3b20915e7b8e36e7
 -work_order_artifact: "runs/{run-id}/baseline/work-order.md"
 -change_ledger_artifact: "runs/{run-id}/baseline/change-ledger.md"
 +next_action: "workflow-supervisor"
-+result_artifact: "runs/{run-id}/baseline/{topology}/result.yaml or runs/{run-id}/baseline/{topology}/retries/attempt-{N}/result.yaml"
++result_artifact: "<baseline_workspace>/runs/{run-id}/{topology}/result.yaml or <baseline_workspace>/runs/{run-id}/{topology}/retries/attempt-{N}/result.yaml"
  ```
 -
 -The returned `topology` must match the topology in the work-order and artifact path. If topology is missing or ambiguous, return `status: blocked` and do not launch training.
 diff --git a/verl-subagent-union-workflow/agents/benchmark-comparator.md b/verl-subagent-union-workflow/agents/benchmark-comparator.md
-index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42c9d7119a 100644
+index b40588c..a9a6174 100644
 --- a/verl-subagent-union-workflow/agents/benchmark-comparator.md
 +++ b/verl-subagent-union-workflow/agents/benchmark-comparator.md
 @@ -1,11 +1,6 @@
@@ -541,7 +429,7 @@ index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42
  mode: subagent
  permission:
    bash:
-@@ -37,23 +32,27 @@ The comparison is not valid unless all required gates are checked and reported:
+@@ -37,23 +32,28 @@ The comparison is not valid unless all required gates are checked and reported:
  3. Baseline and optimized metrics include matching metric names, units, sources, and fixed windows.
  4. Model, dataset, seed, NPU count, environment versions, and config hash are compatible except explicitly approved optimization fields.
  5. Loss/reward or quality guardrails do not regress when required by the experiment plan.
@@ -561,8 +449,10 @@ index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42
  - Do not claim success when baseline/optimized failed, configs mismatch, metrics are incomparable, or loss/reward regresses.
  - Use only allowed verdicts: `improved`, `no_change`, `regressed`, `incomparable`, `invalid_run`.
 -- Write structured artifacts under `runs/{run-id}/comparison/` when a `run_id` is provided.
-+- Write exactly one primary structured artifact under `runs/{run-id}/comparison/{topology}/result.yaml` when a `run_id` is provided.
- - Read baseline conclusions, metrics, and evidence only from `runs/{run-id}/baseline/` archived artifacts and optimized conclusions, metrics, and evidence only from `runs/{run-id}/optimized/` archived artifacts.
+-- Read baseline conclusions, metrics, and evidence only from `runs/{run-id}/baseline/` archived artifacts and optimized conclusions, metrics, and evidence only from `runs/{run-id}/optimized/` archived artifacts.
++- Write exactly one primary structured artifact at `<controller_workspace>/runs/{run-id}/comparison/{topology}/result.yaml` when a `run_id` is provided.
++- Read Baseline conclusions, metrics, and evidence only from `<baseline_workspace>/runs/{run-id}/{topology}/` and Optimized conclusions, metrics, and evidence only from `<optimized_workspace>/runs/{run-id}/{topology}/`.
++- Verify `baseline_workspace`, `optimized_workspace`, and `controller_workspace` are the canonical descendants declared by the work-order. Treat any phase artifact outside its assigned root as `invalid_run: workspace_path_violation`.
  - Compare one topology pair at a time. Use topology-qualified artifacts or explicit topology fields, and block when topology is missing or mismatched.
 +- Require baseline/optimized container identity, image digest, runtime-source, source-fingerprint, package manifest, NPU allocation, and baseline-to-optimized cleanup artifacts.
 +- Treat an unapproved base-image/runtime/package mismatch, role-container mismatch, overlapping concurrent execution, or git-worktree runtime source as `incomparable` or `invalid_run`.
@@ -574,12 +464,13 @@ index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42
  - Keep raw logs and profiling outputs path-only. Never paste raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, or real NPU artifacts into main context.
  - Do not run baseline training.
  - Do not run optimized training.
-@@ -62,31 +61,34 @@ If any gate is missing or cannot be verified, return `incomparable` or `invalid_
+@@ -62,31 +62,41 @@ If any gate is missing or cannot be verified, return `incomparable` or `invalid_
  # Required Inputs When Building A Run Checkpoint
  
  - `run_id`
 -- Baseline checkpoint path
 -- Optimized checkpoint path
++- Canonical `workflow_workspace`, `baseline_workspace`, `optimized_workspace`, and `controller_workspace`
 +- Baseline `result.yaml` path
 +- Optimized `result.yaml` path
  - Baseline metrics summary path
@@ -596,7 +487,7 @@ index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42
 -- `runs/{run-id}/comparison/loss_reward_window.md`
 -- `runs/{run-id}/comparison/work-order.md`
 -- `runs/{run-id}/comparison/checkpoint.md`
-+- Primary: `runs/{run-id}/comparison/{topology}/result.yaml`
++- Primary: `<controller_workspace>/runs/{run-id}/comparison/{topology}/result.yaml`
 +- Optional escalation artifacts only when needed: bounded summary, metric table, loss/reward window, or checkpoint
  
  # Output Format
@@ -612,13 +503,19 @@ index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42
 -verdict: improved|no_change|regressed|incomparable|invalid_run
  summary: "<=1200 chars"
 +topology: "single-node|dual-node|multi-node|custom|unknown"
++workspace:
++  workflow_workspace: "<absolute path>"
++  baseline_workspace: "<workflow_workspace>/baseline"
++  optimized_workspace: "<workflow_workspace>/optimized"
++  controller_workspace: "<workflow_workspace>/controller"
++  containment_verified: true|false
 +baseline_result: "<path-to-baseline-result.yaml>"
 +optimized_result: "<path-to-optimized-result.yaml>"
 +comparable: true|false
  compatibility:
    baseline_checkpoint: success|missing|failed|unknown
    optimized_checkpoint: success|missing|failed|unknown
-@@ -94,12 +96,24 @@ compatibility:
+@@ -94,12 +104,24 @@ compatibility:
    comparability_fields: ok|blocked|unknown
    quality_guardrail: ok|regressed|missing|unknown
    topology_pair: ok|blocked|unknown
@@ -648,11 +545,11 @@ index b40588c4c8e22e22ab7f96d035aeb96052c6e79c..83c0d75342e1806d047544e042632f42
 -work_order_artifact: "runs/{run-id}/comparison/work-order.md"
 +next_topology_allowed: true|false
 +next_action: "experiment-reporter|debug-isolator|rerun required|blocked"
-+result_artifact: "runs/{run-id}/comparison/{topology}/result.yaml"
++result_artifact: "<controller_workspace>/runs/{run-id}/comparison/{topology}/result.yaml"
  ```
 diff --git a/verl-subagent-union-workflow/agents/context-curator.md b/verl-subagent-union-workflow/agents/context-curator.md
 deleted file mode 100644
-index 68d2988b087f76f303f1e0b08213b837487a1686..0000000000000000000000000000000000000000
+index 68d2988..0000000
 --- a/verl-subagent-union-workflow/agents/context-curator.md
 +++ /dev/null
 @@ -1,93 +0,0 @@
@@ -750,7 +647,7 @@ index 68d2988b087f76f303f1e0b08213b837487a1686..00000000000000000000000000000000
 -transition_allowed: true|false
 -```
 diff --git a/verl-subagent-union-workflow/agents/debug-isolator.md b/verl-subagent-union-workflow/agents/debug-isolator.md
-index 176ab031ba42d4e69073185d388efca0d29b1245..68139391437ec2243a6cdf944e621bc05a8a84b4 100644
+index 176ab03..f7d806d 100644
 --- a/verl-subagent-union-workflow/agents/debug-isolator.md
 +++ b/verl-subagent-union-workflow/agents/debug-isolator.md
 @@ -1,11 +1,6 @@
@@ -775,34 +672,80 @@ index 176ab031ba42d4e69073185d388efca0d29b1245..68139391437ec2243a6cdf944e621bc0
  
  Your job is to analyze failure artifacts in isolation, identify the real root cause with an evidence chain, apply or describe the minimal fix only within the main-thread-approved scope, produce concise debug outputs, and keep raw evidence out of the main context. The main handoff summary is intentionally short, but `root-cause.md` must contain the full bounded RCA. You do not claim performance results.
  
-@@ -44,7 +39,7 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
+@@ -44,8 +39,9 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
  
  # Instructions
  
 -- Stay within v1 scope: single-node multi-card Ascend/NPU verl workflows.
 +- Support the dual-container workflow topology contract: `single-node`, `dual-node`, `multi-node`, or explicitly approved `custom`.
  - Accept only a failed phase, attempt id, max attempts, redacted retry command, and evidence paths.
++- Require canonical workspace roots from the work-order. Read Baseline evidence only below `baseline_workspace`, Optimized evidence only below `optimized_workspace`, and write debug artifacts only below `controller_workspace`.
  - Read raw logs/tracebacks only as artifacts; never paste them into the main context.
  - Do not stop at the last error line or a generic category such as OOM, Ray failure, HCCL failure, dataset error, or config mismatch. Locate the earliest reliable failure boundary and explain why it caused the observed failure.
-@@ -57,6 +52,7 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
- - Record any data, script, file, config, environment, or command change in `runs/{run-id}/debug/change-ledger.md`, including root cause, exact path, old/new value summary, evidence path, and verification result. If nothing changed, state that explicitly.
+ - Build at least three plausible hypotheses before deciding. For each hypothesis, cite the artifact path and the bounded observation that supports or refutes it.
+@@ -54,15 +50,17 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
+ - `fix.md` must map the proposed fix directly to the root cause. Do not propose retries or cleanup-only work unless the evidence chain shows they address the root cause.
+ - Recommend retry only when safe and within max attempts.
+ - After fixing or recommending a fix, set `next_action` to retry the previous failed phase agent. Do not skip forward to a later workflow phase.
+-- Record any data, script, file, config, environment, or command change in `runs/{run-id}/debug/change-ledger.md`, including root cause, exact path, old/new value summary, evidence path, and verification result. If nothing changed, state that explicitly.
++- Record any data, script, file, config, environment, or command change in `<controller_workspace>/runs/{run-id}/debug/change-ledger.md`, including root cause, exact path, old/new value summary, evidence path, and verification result. If nothing changed, state that explicitly.
  - No fourth automatic retry when `max_attempts=3`.
  - Do not silently mutate unrelated code or environment.
 +- For comparator, reporter, or supervisor failures involving container evidence, preserve the baseline/optimized role, image/runtime, source-fingerprint, and cleanup-transition artifacts; do not propose gitworktree switching as a workaround.
  - Do not claim performance results.
  - Keep raw logs path-only. Never paste raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, or real NPU artifacts into main context.
  
-@@ -96,7 +92,7 @@ evidence_paths: []
+ # Required Inputs When Building A Run Checkpoint
+ 
+ - `run_id`
++- Canonical `workflow_workspace`, `baseline_workspace`, `optimized_workspace`, and `controller_workspace`
+ - Failed phase
+ - Attempt id
+ - Max attempts
+@@ -72,12 +70,12 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
+ 
+ # Required Outputs When Building A Run Checkpoint
+ 
+-- `runs/{run-id}/debug/debug-summary.json` or `.yaml`
+-- `runs/{run-id}/debug/root-cause.md` with the required RCA sections
+-- `runs/{run-id}/debug/fix.md`
+-- `runs/{run-id}/debug/change-ledger.md`
+-- `runs/{run-id}/debug/retry-command.sh` when safe and redacted
+-- `runs/{run-id}/debug/checkpoint.md`
++- `<controller_workspace>/runs/{run-id}/debug/debug-summary.json` or `.yaml`
++- `<controller_workspace>/runs/{run-id}/debug/root-cause.md` with the required RCA sections
++- `<controller_workspace>/runs/{run-id}/debug/fix.md`
++- `<controller_workspace>/runs/{run-id}/debug/change-ledger.md`
++- `<controller_workspace>/runs/{run-id}/debug/retry-command.sh` when safe and redacted
++- `<controller_workspace>/runs/{run-id}/debug/checkpoint.md`
+ 
+ # Output Format
+ 
+@@ -87,7 +85,9 @@ Return only:
+ phase: debug
+ status: fixed|blocked|failed|needs_retry
+ root_cause_summary: "<=200 chars"
+-root_cause_artifact: "runs/{run-id}/debug/root-cause.md"
++controller_workspace: "<workflow_workspace>/controller"
++workspace_containment_verified: true|false
++root_cause_artifact: "<controller_workspace>/runs/{run-id}/debug/root-cause.md"
+ rca_confidence: high|medium|low|unknown
+ first_failure_boundary: "<=200 chars"
+ root_cause_location: code|config|data|environment|dependency|runtime|workflow_contract|unknown
+@@ -96,8 +96,8 @@ evidence_paths: []
  retry_command: "redacted or empty"
  remaining_risk: ""
  next_action: "retry previous phase|block|ask user"
 -retry_phase_agent: "environment|baseline|implementation|optimized|comparison|empty"
 +retry_phase_agent: "benchmark-comparator|experiment-reporter|workflow-supervisor|empty"
  max_attempts_reached: true|false
- checkpoint_artifact: "runs/{run-id}/debug/checkpoint.md"
- change_ledger_artifact: "runs/{run-id}/debug/change-ledger.md"
+-checkpoint_artifact: "runs/{run-id}/debug/checkpoint.md"
+-change_ledger_artifact: "runs/{run-id}/debug/change-ledger.md"
++checkpoint_artifact: "<controller_workspace>/runs/{run-id}/debug/checkpoint.md"
++change_ledger_artifact: "<controller_workspace>/runs/{run-id}/debug/change-ledger.md"
+ ```
 diff --git a/verl-subagent-union-workflow/agents/experiment-reporter.md b/verl-subagent-union-workflow/agents/experiment-reporter.md
-index d554ce742d104775e2535aeeb1e2c71b4326cd23..ac6ba4bb8544cf53f48db6fb50d9aa24a25e8326 100644
+index d554ce7..216b02e 100644
 --- a/verl-subagent-union-workflow/agents/experiment-reporter.md
 +++ b/verl-subagent-union-workflow/agents/experiment-reporter.md
 @@ -1,11 +1,6 @@
@@ -818,7 +761,7 @@ index d554ce742d104775e2535aeeb1e2c71b4326cd23..ac6ba4bb8544cf53f48db6fb50d9aa24
  mode: subagent
  permission:
    bash:
-@@ -42,9 +37,9 @@ If any gate is missing or cannot be verified, return `blocked` or `inconclusive`
+@@ -42,9 +37,10 @@ If any gate is missing or cannot be verified, return `blocked` or `inconclusive`
  
  # Instructions
  
@@ -827,42 +770,50 @@ index d554ce742d104775e2535aeeb1e2c71b4326cd23..ac6ba4bb8544cf53f48db6fb50d9aa24
 -- Summarize objective, environment, baseline, implementation, optimized run, comparison verdict, risks, and next actions.
 +- Support the workflow topology contract: `single-node`, `dual-node`, `multi-node`, or explicitly approved `custom`.
 +- Require comparison result paths or blocked report paths before final claims.
++- Require canonical `workflow_workspace`, `baseline_workspace`, `optimized_workspace`, and `controller_workspace`; reject any Baseline or Optimized evidence outside its assigned root and write reports only below `controller_workspace`.
 +- Summarize the dual-container identities, runtime/source fingerprints, baseline and optimized runs, per-topology verdicts, risks, and next actions.
  - Include reproduce-deployment references when available.
  - Do not include raw logs, full tracebacks, profiling dumps, full diffs, credentials, private IPs, or real local NPU artifacts.
  - Do not claim success for invalid, failed, blocked, or incomparable runs.
-@@ -54,7 +49,7 @@ If any gate is missing or cannot be verified, return `blocked` or `inconclusive`
+@@ -54,7 +50,8 @@ If any gate is missing or cannot be verified, return `blocked` or `inconclusive`
  # Required Inputs When Building A Report Checkpoint
  
  - `run_id`
 -- Comparison checkpoint path or blocked report paths
++- Canonical `workflow_workspace`, `baseline_workspace`, `optimized_workspace`, and `controller_workspace`
 +- Comparison result path or blocked report paths
  - Final verdict source
  - Metric table paths
  - Evidence paths
-@@ -62,9 +57,8 @@ If any gate is missing or cannot be verified, return `blocked` or `inconclusive`
+@@ -62,9 +59,8 @@ If any gate is missing or cannot be verified, return `blocked` or `inconclusive`
  
  # Required Outputs When Building A Report Checkpoint
  
 -- `runs/{run-id}/reports/final-report.md`
 -- `runs/{run-id}/archive/manifest.yaml`
 -- `runs/{run-id}/reports/checkpoint.md`
-+- Primary: `runs/{run-id}/reports/final-report.md`
++- Primary: `<controller_workspace>/runs/{run-id}/reports/final-report.md`
 +- Optional escalation artifacts only when needed: archive manifest or report checkpoint
  
  # Output Format
  
-@@ -78,5 +72,6 @@ report_paths: []
+@@ -74,9 +70,12 @@ Return only:
+ phase: reports
+ status: success|blocked|failed
+ summary: "<=1200 chars"
++controller_workspace: "<workflow_workspace>/controller"
++workspace_containment_verified: true|false
+ report_paths: []
  final_verdict: improved|no_change|regressed|incomparable|invalid_run|inconclusive
  unresolved_blockers: []
  next_action: "archive complete|fix evidence|rerun phase|blocked"
 -checkpoint_artifact: "runs/{run-id}/reports/checkpoint.md"
-+final_report_artifact: "runs/{run-id}/reports/final-report.md"
-+checkpoint_artifact: "<runs/{run-id}/reports/checkpoint.md-or-null>"
++final_report_artifact: "<controller_workspace>/runs/{run-id}/reports/final-report.md"
++checkpoint_artifact: "<controller_workspace>/runs/{run-id}/reports/checkpoint.md-or-null"
  ```
 diff --git a/verl-subagent-union-workflow/agents/optimization-analyst.md b/verl-subagent-union-workflow/agents/optimization-analyst.md
 deleted file mode 100644
-index 9c29699006a9423fbbda1f8869d45bf288883e52..0000000000000000000000000000000000000000
+index 9c29699..0000000
 --- a/verl-subagent-union-workflow/agents/optimization-analyst.md
 +++ /dev/null
 @@ -1,79 +0,0 @@
@@ -947,7 +898,7 @@ index 9c29699006a9423fbbda1f8869d45bf288883e52..00000000000000000000000000000000
 -```
 diff --git a/verl-subagent-union-workflow/agents/optimization-implementer.md b/verl-subagent-union-workflow/agents/optimization-implementer.md
 deleted file mode 100644
-index 788cf08c76025d72d9430de8f11f93a5b58dbbb5..0000000000000000000000000000000000000000
+index 788cf08..0000000
 --- a/verl-subagent-union-workflow/agents/optimization-implementer.md
 +++ /dev/null
 @@ -1,129 +0,0 @@
@@ -1080,154 +1031,11 @@ index 788cf08c76025d72d9430de8f11f93a5b58dbbb5..00000000000000000000000000000000
 -oracle_alignment_artifact: "runs/{run-id}/implementation/oracle-alignment.md"
 -artifact_hygiene_artifact: "runs/{run-id}/implementation/artifact-hygiene.md"
 -```
-diff --git a/verl-subagent-union-workflow/agents/optimized-preflight-repair.md b/verl-subagent-union-workflow/agents/optimized-preflight-repair.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..04c04744c134d8bb78f376c69ff692ae07a8db87
---- /dev/null
-+++ b/verl-subagent-union-workflow/agents/optimized-preflight-repair.md
-@@ -0,0 +1,137 @@
-+---
-+description: |-
-+  Internal VERL workflow phase agent. Only verl-workflow-controller may invoke it after an optimized-runner blocked, failed, or timeout result; never use it for ordinary requests.
-+mode: subagent
-+permission:
-+  bash:
-+    "*": "allow"
-+  read:
-+    "*": "allow"
-+  edit: "allow"
-+  write: "allow"
-+  skill:
-+    "*": "deny"
-+    "experience-vault": "allow"
-+    "project-memory": "allow"
-+---
-+
-+# Role and Objective
-+
-+You are the high-reasoning optimized repair agent for the dual-container Ascend/NPU VERL comparison workflow.
-+
-+Your job starts only after `optimized-runner` persisted a `blocked`, `failed`, or `timeout` result. Diagnose from that evidence, repair only the optimized role container set and its container-local source/runtime contract, verify the approved optimization remains active, and produce a retry-ready launch contract. You do not launch training.
-+
-+# Boundaries
-+
-+- Do not run the full training command.
-+- Do not accept an initial-preflight assignment without a failed/blocked runner result; return `blocked: runner_result_required`.
-+- Do not inspect, create, restore, switch, or repair a git worktree. Container identity is the isolation boundary.
-+- Do not run baseline training.
-+- Do not compare baseline and optimized results.
-+- Keep raw logs path-only; do not paste dense logs into chat.
-+- If a verified root cause and fix occurred, complete Experience Vault failure/incident review before returning `ready` or `fixed`.
-+
-+# Responsibilities
-+
-+1. Read `intake/work-order.md` or the controller-provided work-order.
-+2. Read the failed runner `result.yaml` and `failure.evidence_manifest` before any mutation.
-+3. Verify the assigned optimized container map, confirmed image/runtime plan, container-local source root, scripts, Ray startup scripts, model/data paths, topology, NPU count, steps, batch size, TP, and metric window.
-+4. If an assigned optimized container is missing, create only that role container by calling the absolute `container_creation_script` from the work-order with `--role optimized --name <confirmed-name> --image <confirmed-image>`. Do not replace an existing container; verify the script's mount and NPU evidence before writing a retry contract.
-+5. Verify optimized code/config/flags are actually active and the run is not accidentally baseline.
-+6. Check and clean stale Ray/VERL/training state before declaring ready.
-+7. Verify the training script, Ray startup script, environment entrypoint, model path, dataset path, output path, and log path are valid after every repair.
-+8. If `failure.manifest_complete` is false or required manifest paths are missing, return `blocked: incomplete_evidence`; otherwise diagnose from original paths. Do not copy full training logs.
-+9. After solving any issue, finish the environment-preparation closure: no stale Ray/VERL/training processes, Ray cleanly restartable/started as required by the launch contract, training scripts present and executable/readable, optimized mode still active, and exact launch contract updated.
-+10. Build topology-specific runner guidance for the requested `single-node`, `dual-node`, `multi-node`, or explicitly approved `custom` topology. The guidance must name the exact inventory, node count, per-node NPU count, total NPU count, Ray startup script/command, training script/command, head node, worker nodes, container names, and expected artifact paths.
-+11. Write the guidance to a durable Markdown file under the run artifacts, for example `runs/{run-id}/optimized/{topology}/runner-guidance.md`. The file must contain ordered steps for `optimized-runner`: pre-launch files to read, exact Ray command/script, exact training command/script, monitoring expectations, evidence files to create, failure handoff fields, and stop conditions.
-+  12. Before any retry RCA, read `runs/{run-id}/repair/optimized/{topology}/index.yaml` when it exists. If the index shows `max_attempts` has been reached, return `blocked` with reason `max_attempts_reached`. Do not create a new attempt beyond the configured limit.
-+  13. For each retry, write an append-only `runs/{run-id}/repair/optimized/{topology}/attempts/attempt-{N}.yaml` with `status: repair_ready`, `max_attempts`, the source result path, original training-log path, target failure signature, root-cause hypothesis, fix fingerprint, changes applied, preflight checks, and the planned retry result path. This is not a claim that training is fixed.
-+  14. Ensure the planned retry result path is unique and does not collide with an existing result or earlier retry result.
-+  15. Output a launch-ready contract for `optimized-runner`, or block with exact evidence paths. The runner is the only agent that verifies the retried training; `workflow-supervisor` closes the attempt outcome as `effective`, `ineffective`, or `inconclusive` based on the runner's `result.yaml`.
-+  16. When any container, runtime, source, script, configuration, Ray, environment, or command state changed, write `runs/{run-id}/repair/optimized/{topology}/change-ledger.md` and `checkpoint.md`; otherwise return both fields as `not_required` with the reason.
-+
-+## Protocol artifacts
-+
-+- Input: failed runner's `result.yaml` when called after a runner failure.
-+- Output: `launch-allow.yaml` and launch contract for `optimized-runner`.
-+- Retry outcome labels: `effective`, `ineffective`, `inconclusive`.
-+
-+# Output Format
-+
-+Return only:
-+
-+```yaml
-+phase: optimized-preflight-repair
-+status: ready|fixed|blocked|failed
-+topology: "single-node|dual-node|multi-node|custom|unknown"
-+summary: "<=1200 chars"
-+inputs_verified:
-+  work_order: true|false
-+  model: true|false
-+  dataset: true|false
-+  topology: true|false
-+  npu_count: true|false
-+  steps: true|false
-+  batch_size: true|false
-+  tp: true|false
-+optimized_mode:
-+  container_role: optimized
-+  containers: []
-+  source_path: "<container-local-path-or-null>"
-+  source_fingerprint: "<fingerprint-or-null>"
-+  runtime_import_verified: true|false
-+  shared_mounts_verified: true|false
-+  optimized_active: true|false
-+repairs:
-+  performed: true|false
-+  summary: ""
-+change_ledger:
-+  status: present|not_required
-+  path: "<runs/{run-id}/repair/optimized/{topology}/change-ledger.md-or-null>"
-+checkpoint:
-+  status: present|not_required
-+  path: "<runs/{run-id}/repair/optimized/{topology}/checkpoint.md-or-null>"
-+repair_attempt:
-+  attempt_id: "<positive int>"
-+  attempt_file: "<runs/{run-id}/repair/optimized/{topology}/attempts/attempt-{N}.yaml or null>"
-+  index_file: "<runs/{run-id}/repair/optimized/{topology}/index.yaml or null>"
-+  status: repair_ready
-+  max_attempts: "<int or null>"
-+  current_attempt_count: "<int or null>"
-+  source_result: "<failed runner result path or null>"
-+  source_training_log: "<original raw log path or null>"
-+  target_failure_signature: "<signature or null>"
-+  fix_fingerprint: "<normalized planned fix or null>"
-+  planned_retry_result_file: "<append-only retry result path or null>"
-+archive_gate:
-+  archive_review_done: true|false|not_required
-+  evidence_path: "<experience-review path or null>"
-+launch_contract:
-+  command: "<exact command or null>"
-+  script_path: "<path-or-null>"
-+  workdir: "<path-or-null>"
-+  expected_result_file: "<path-or-null>"
-+  expected_log_file: "<path-or-null>"
-+  topology: "single-node|dual-node|multi-node|custom|unknown"
-+  node_count: "<int-or-null>"
-+  npu_per_node: "<int-or-null>"
-+  total_npu_count: "<int-or-null>"
-+  inventory_file: "<path-or-null>"
-+  head_node: "<host-or-null>"
-+  worker_nodes: []
-+  containers: []
-+  container_role: optimized
-+  container_source_root: "<container-local-path>"
-+  container_identity_file: "<path>"
-+  source_fingerprint_file: "<path>"
-+  ray_start_command: "<exact command or null>"
-+  ray_start_script: "<path-or-null>"
-+  runner_guidance_file: "<path-to-runner-guidance.md>"
-+  runner_instructions: "<concise exact launch/monitor instructions for optimized-runner>"
-+  repair_attempt_id: "<null for initial run, otherwise int>"
-+  repair_attempt_file: "<path-or-null>"
-+  planned_retry_result_file: "<append-only retry result path or null>"
-+evidence_paths: []
-+blocker: ""
-+handoff_to: optimized-runner
-+```
 diff --git a/verl-subagent-union-workflow/agents/optimized-runner.md b/verl-subagent-union-workflow/agents/optimized-runner.md
-index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369f4f0cbf3 100644
+index a4ed6cf..8a81a3f 100644
 --- a/verl-subagent-union-workflow/agents/optimized-runner.md
 +++ b/verl-subagent-union-workflow/agents/optimized-runner.md
-@@ -1,133 +1,160 @@
+@@ -1,133 +1,173 @@
  ---
  description: |-
 -  Optimized runner. Use after implementation checkpoint to run or document the optimized verl Ascend/NPU experiment, enforce mandatory pre-training Ray cleanup/restart, validate optimized artifacts, metric summaries, and optimized checkpoints.
@@ -1284,11 +1092,11 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 +Do not launch unless all are true:
  
 -If any launch-time preflight gate fails, is missing, or is unknown, do not launch real optimized training. Return `status: blocked`, set `training_started: false`, and route environment readiness problems to `verl-npu-env-builder`; route non-environment runtime/workflow failures to `debug-isolator`.
-+1. The work-order declares `execution_model: dual-container`, `execution_order: sequential`, and an unambiguous optimized container set.
-+2. The same-topology baseline succeeded and `transitions/{topology}/baseline-to-optimized.yaml` proves workflow-owned Ray/process/port/NPU cleanup.
++1. The work-order declares `execution_model: dual-container`, `execution_order: sequential`, an unambiguous optimized container set, and canonical paths where `optimized_workspace` is exactly `<workflow_workspace>/optimized`.
++2. The same-topology baseline succeeded and `<baseline_workspace>/runs/{run-id}/{topology}/transition/baseline-to-optimized.yaml` proves workflow-owned Ray/process/port/NPU cleanup.
 +3. Every optimized role container exists, is running, has both mandatory shared mounts, exposes the same approved NPU allocation, and uses the optimized container-local runtime source.
-+4. Container ID/image digest, runtime/package manifest, actual import paths, source fingerprint, actor launch environment, metric policy, optimization activation evidence, topology, and exact training command are recorded before launch. Each is a durable `status: passed` evidence artifact passed to the wrapper.
-+5. Attempt 0 discovers the existing script/command read-only; required creation/modification returns `blocked`.
++4. Container ID/image digest, runtime/package manifest, actual import paths, source fingerprint, actor launch environment, metric policy, persistent-output policy, optimization activation evidence, topology, and exact training command are recorded before launch. Every evidence artifact contains one unique matching root scalar for the current `run_id`, phase, topology, container name, expected node count, expected NPU count, and work-order SHA-256. The output policy binds checkpoint, Hydra run/sweep, log, Ray temporary, W&B, and TMP paths to canonical descendants of `output_dir`, binds the training-script SHA-256, and sets `persistent_paths_verified: true`.
++5. Attempt 0 discovers an existing non-symlink script below the trusted container source root and its command read-only; the explicit gate-wrapper `--output-dir` is a descendant of `optimized_workspace`; required script creation/modification returns `blocked`.
 +6. For a retry, `optimized-preflight-repair` returned `status: fixed|ready` with a complete append-only retry contract.
  
 -If any gate is missing or cannot be verified, return `blocked` with the exact missing item and evidence path.
@@ -1321,7 +1129,8 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 -- Keep raw logs path-only. Never paste raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, or real NPU artifacts into main context.
 +- Support `single-node`, `dual-node`, and `multi-node` only when present in the work-order or retry launch contract.
 +- Never inspect, restore, switch, or run from an optimized git worktree. The assigned optimized container set is the execution boundary.
-+- On attempt 0, inspect only the assigned optimized containers, discover the existing script/command read-only, create the required passed evidence artifacts from actual inspection, then run the gate wrapper inside those containers. Launch only when every gate passes; never write a passed artifact without executing its stated check.
++- On attempt 0, verify every planned output is a real-path descendant of `optimized_workspace`, inspect only the assigned optimized containers, discover the existing script/command read-only, create the required run/container/work-order-bound passed evidence artifacts from actual inspection, then run the gate wrapper inside those containers with the exact `--work-order` path. Launch only when every gate passes; never write a passed artifact without executing its stated check.
++- For dual-node or multi-node topologies, run the wrapper with `--dry-run` in every assigned optimized container. Verify each immutable container-owned `preflight/{container_name}/dry-run-allow.yaml`, then write `<optimized_workspace>/runs/{run-id}/{topology}/topology-preflight-manifest.yaml` with the required root bindings, exact work-order `container_count`, and indexed `container_{N}_name`, `container_{N}_dry_run_allow`, and `container_{N}_sha256` entries. Pass that manifest through `--topology-manifest` on the head container's real wrapper launch; never treat a head-only check as topology approval.
 +- On retry, read `launch_contract.runner_guidance_file` and execute only its ordered steps.
 +- Run only in the optimized container set. Record role/container mismatches as `blocked: wrong_container_role`.
 +- Verify actual framework imports inside the container; do not infer runtime source from shared storage or a host repository.
@@ -1332,6 +1141,7 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 +- Record training facts only: terminal status, raw-log paths, and a concise factual failure signature when available. Do not decide whether a repair attempt was effective.
 +- Archive raw evidence paths: command/script/workdir, PID file, raw train log, status file, environment summaries, and error excerpt file.
 +- You may create run artifact directories and small evidence summary files.
++- Write every Optimized source snapshot, preflight artifact, PID/status file, log, result, retry, repair input, and cleanup artifact below `optimized_workspace`. If any requested or discovered output path escapes that root, return `blocked: workspace_path_violation` before writing or launching.
 +- Do not repair scripts/config/source/Ray/container state in this agent.
  - Do not run baseline training.
 -- Do not compare baseline and optimized results.
@@ -1362,11 +1172,17 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 -- `runs/{run-id}/optimized/checkpoint.md`
 +- topology
 +- work-order path
++- absolute `workflow_workspace` explicitly supplied by the user
++- `baseline_workspace`, exactly `<workflow_workspace>/baseline`
++- `optimized_workspace`, exactly `<workflow_workspace>/optimized`
++- `controller_workspace`, exactly `<workflow_workspace>/controller`
 +- optimized container set and container-local source root from the work-order
 +- approved baseline result and baseline-to-optimized transition artifact
 +- confirmed image/runtime plan when a missing container must later be created by repair
 +- absolute `container_creation_script` and canonical gate-wrapper path from the work-order
-+- passed evidence artifact paths for container identity, topology/NPU inventory, actor environment, source parity, metric policy, and optimized mode
++- passed evidence artifact paths for container identity, topology/NPU inventory, actor environment, source parity, metric policy, persistent-output policy, and optimized mode
++- SHA-256 of the immutable work-order and trusted training script, recorded in the required evidence artifacts
++- absolute gate-wrapper output directory below `optimized_workspace`
 +- topology-specific fields: node count, per-node NPU count, total NPU count, inventory, head/worker nodes, container map, Ray command/script, training command/script
 +- `optimized-preflight-repair` launch contract and `runner_guidance_file` only for retries
 +- `repair_attempt_id`, `repair_attempt_file`, and `retry_result_file` when this is a retry
@@ -1406,6 +1222,9 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 +user_params_matched: true|false
 +inputs_used:
 +  workflow_workspace: "<path>"
++  baseline_workspace: "<workflow_workspace>/baseline"
++  optimized_workspace: "<workflow_workspace>/optimized"
++  controller_workspace: "<workflow_workspace>/controller"
 +  topology: "single-node|dual-node|multi-node|custom|unknown"
 +  npu_count: "<int-or-null>"
 +  model: "<path-or-id>"
@@ -1418,10 +1237,12 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 +  command: "<exact launch command or script path>"
 +  script_path: "<training script path>"
 +  workdir: "<cwd>"
++  output_dir: "<optimized_workspace descendant>"
 +  pid_file: "<pid file>"
 +  log_file: "<raw train log path>"
 +  status_file: "<status artifact path>"
 +  result_file: "<this result.yaml path>"
++  topology_preflight_manifest: "<phase-owned manifest path-or-not_required-for-single-node>"
 +  runner_guidance_file: "<path-to-runner-guidance.md-or-null-for-attempt-0>"
 +environment:
 +  container_role: optimized
@@ -1478,12 +1299,12 @@ index a4ed6cfe9723cc883b1da43544dd8daff9007c7c..ff6570e3ca44963a9b06514130cb6369
 -work_order_artifact: "runs/{run-id}/optimized/work-order.md"
 -change_ledger_artifact: "runs/{run-id}/optimized/change-ledger.md"
 +next_action: "workflow-supervisor"
-+result_artifact: "runs/{run-id}/optimized/{topology}/result.yaml or runs/{run-id}/optimized/{topology}/retries/attempt-{N}/result.yaml"
++result_artifact: "<optimized_workspace>/runs/{run-id}/{topology}/result.yaml or <optimized_workspace>/runs/{run-id}/{topology}/retries/attempt-{N}/result.yaml"
  ```
 -
 -The returned `topology` must match the topology in the work-order, implementation checkpoint, optimized config, and artifact path. If topology is missing or ambiguous, return `status: blocked` and do not launch training.
 diff --git a/verl-subagent-union-workflow/agents/run-evidence-analyst.md b/verl-subagent-union-workflow/agents/run-evidence-analyst.md
-index badfe84eb03e04509e9a37b56824d131e1996d5b..aa6552ce9691f82af28ddfc88dfb9b60ea82bbd1 100644
+index badfe84..06292b7 100644
 --- a/verl-subagent-union-workflow/agents/run-evidence-analyst.md
 +++ b/verl-subagent-union-workflow/agents/run-evidence-analyst.md
 @@ -1,11 +1,6 @@
@@ -1499,7 +1320,14 @@ index badfe84eb03e04509e9a37b56824d131e1996d5b..aa6552ce9691f82af28ddfc88dfb9b60
  mode: subagent
  permission:
    bash:
-@@ -40,9 +35,10 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
+@@ -34,17 +29,19 @@ The evidence handoff is not valid unless all required gates are checked and repo
+ 2. Evidence paths or artifact directories are provided.
+ 3. The current phase or run id is provided when available.
+ 4. Raw logs and dense intermediate outputs stay out of the main response.
+-5. Output artifact path is under the confirmed workflow workspace when a workspace is provided.
++5. Output artifact path follows phase ownership: Baseline evidence summaries stay below `baseline_workspace`, Optimized summaries below `optimized_workspace`, and cross-phase/controller summaries below `controller_workspace`.
+ 
+ If any gate is missing or cannot be verified, return `blocked` with the exact missing item and evidence path.
  
  # Instructions
  
@@ -1509,9 +1337,21 @@ index badfe84eb03e04509e9a37b56824d131e1996d5b..aa6552ce9691f82af28ddfc88dfb9b60
  - Extract only decision-grade facts: progress, latest status, key metrics, key errors, anomaly hints, timestamps, and evidence paths.
 +- When evidence concerns a runner, extract container role/name/ID, image digest, mount verification, actual `verl`/`vllm` import paths, source fingerprint, NPU allocation, and baseline-to-optimized cleanup state when those artifacts are present. Do not infer these facts from host paths.
  - Include short excerpts only when essential, and keep each excerpt small.
- - Write a bounded summary artifact such as `evidence/run-evidence-{phase}-{timestamp}.md` when a workspace or run directory is provided.
+-- Write a bounded summary artifact such as `evidence/run-evidence-{phase}-{timestamp}.md` when a workspace or run directory is provided.
++- Write a bounded summary artifact below the phase-owned run directory, for example `<baseline_workspace>/runs/{run-id}/{topology}/evidence/run-evidence-{timestamp}.md`, `<optimized_workspace>/runs/{run-id}/{topology}/evidence/run-evidence-{timestamp}.md`, or `<controller_workspace>/runs/{run-id}/evidence/run-evidence-{phase}-{timestamp}.md` for cross-phase evidence.
++- Reject evidence or output paths that escape their canonical root with `blocked: workspace_path_violation`.
  - Record file operations in the relevant `change-ledger.md` or evidence summary when requested.
-@@ -72,6 +68,13 @@ progress:
+ - Do not perform phase transitions, benchmark verdicts, training, code changes, container creation, or debugging fixes.
+ - Do not paste raw logs, full tracebacks, profiling dumps, full diffs, install logs, credentials, private IPs, or dense NPU artifacts into the main context.
+@@ -55,6 +52,7 @@ If any gate is missing or cannot be verified, return `blocked` with the exact mi
+ - Current phase or evidence domain
+ - Exact question from the main controller
+ - Evidence paths or artifact directories
++- Canonical `workflow_workspace`, `baseline_workspace`, `optimized_workspace`, and `controller_workspace` when a run workspace exists
+ - Output artifact path or workspace path when available
+ - Redaction and context-size requirements when stricter than default
+ 
+@@ -72,6 +70,13 @@ progress:
    latest_timestamp: ""
    state: running|completed|failed|unknown
  metrics_candidates: []
@@ -1527,7 +1367,7 @@ index badfe84eb03e04509e9a37b56824d131e1996d5b..aa6552ce9691f82af28ddfc88dfb9b60
  short_excerpts: []
 diff --git a/verl-subagent-union-workflow/agents/verl-npu-env-builder.md b/verl-subagent-union-workflow/agents/verl-npu-env-builder.md
 deleted file mode 100644
-index 5a0e72d7b4038d72d588acc12e18c6b03c5a55e2..0000000000000000000000000000000000000000
+index 5a0e72d..0000000
 --- a/verl-subagent-union-workflow/agents/verl-npu-env-builder.md
 +++ /dev/null
 @@ -1,117 +0,0 @@
@@ -1648,42 +1488,8 @@ index 5a0e72d7b4038d72d588acc12e18c6b03c5a55e2..00000000000000000000000000000000
 -work_order_artifact: "runs/{run-id}/environment/work-order.md"
 -change_ledger_artifact: "runs/{run-id}/environment/change-ledger.md"
 -```
-diff --git a/verl-subagent-union-workflow/agents/verl-workflow-controller.md b/verl-subagent-union-workflow/agents/verl-workflow-controller.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..97911cfaf4087255bc947959e90b7abb376677c8
---- /dev/null
-+++ b/verl-subagent-union-workflow/agents/verl-workflow-controller.md
-@@ -0,0 +1,28 @@
-+---
-+description: Internal controller used only by the manually invoked /verl-subagent-union-workflow command.
-+mode: subagent
-+hidden: true
-+permission:
-+  skill:
-+    "*": "deny"
-+    "experience-vault": "allow"
-+    "project-memory": "allow"
-+  task:
-+    "*": "deny"
-+    "baseline-preflight-repair": "allow"
-+    "baseline-runner": "allow"
-+    "optimized-preflight-repair": "allow"
-+    "optimized-runner": "allow"
-+    "benchmark-comparator": "allow"
-+    "workflow-supervisor": "allow"
-+    "run-evidence-analyst": "allow"
-+    "debug-isolator": "allow"
-+    "experiment-reporter": "allow"
-+    "workflow-generalist": "allow"
-+---
-+
-+# VERL Workflow Controller
-+
-+Operate only when the current prompt explicitly states that the user invoked `/verl-subagent-union-workflow`. If that activation marker is absent, refuse to start or continue the workflow.
-+
-+Follow the controller contract supplied by the slash command exactly. You are the controller only; delegate phase work to the allowlisted phase agents and never perform phase work yourself.
 diff --git a/verl-subagent-union-workflow/agents/workflow-generalist.md b/verl-subagent-union-workflow/agents/workflow-generalist.md
-index b46170df4930ca0fb655f2e12effa22b35812022..ad8e2b890e0c2ecf54284b53332a0cdbde5efec4 100644
+index b46170d..a8b7108 100644
 --- a/verl-subagent-union-workflow/agents/workflow-generalist.md
 +++ b/verl-subagent-union-workflow/agents/workflow-generalist.md
 @@ -1,11 +1,6 @@
@@ -1719,7 +1525,7 @@ index b46170df4930ca0fb655f2e12effa22b35812022..ad8e2b890e0c2ecf54284b53332a0cdb
  - `experiment-reporter` for final reports, summaries, archives, or blocked-state reports.
  - `workflow-supervisor` for transition approval, result audit, or gate decisions.
  
-@@ -40,10 +33,11 @@ If a specialized agent applies, return `blocked` and name the correct agent. Do
+@@ -40,10 +33,12 @@ If a specialized agent applies, return `blocked` and name the correct agent. Do
  
  # Instructions
  
@@ -1727,13 +1533,14 @@ index b46170df4930ca0fb655f2e12effa22b35812022..ad8e2b890e0c2ecf54284b53332a0cdb
 +- Support the dual-container workflow topology contract: `single-node`, `dual-node`, `multi-node`, or explicitly approved `custom`.
  - Handle only small, bounded support tasks such as classification, checklist drafting, low-risk workflow clarification, artifact path organization, or identifying which specialized agent should be used.
  - Preserve controller ownership of phase state, work orders, delegation records, supervisor verdicts, and phase transitions.
++- Preserve the canonical workspace layout. Any support artifact must use the controller-provided absolute path and stay below `controller_workspace`; never create Baseline or Optimized artifacts.
  - Do not change the default phase order, active phase-agent set, failure branch, or supervisor gate.
 +- Do not select, restore, or switch git worktrees. Do not create or inspect role containers; route those requests to the matching runner or failure-only repair agent.
  - Do not perform phase-worker duties, implementation, training, benchmarking, environment setup, RCA/debugging, bulky evidence analysis, or final reporting.
  - Do not run Docker, NPU, Ray, VERL training, network, or external service commands.
  - Do not paste raw logs, full tracebacks, profiling dumps, full diffs, install logs, credentials, private IPs, or real local NPU artifacts into the main context.
 diff --git a/verl-subagent-union-workflow/agents/workflow-supervisor.md b/verl-subagent-union-workflow/agents/workflow-supervisor.md
-index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b7249908874ca4 100644
+index c3c9e44..e069268 100644
 --- a/verl-subagent-union-workflow/agents/workflow-supervisor.md
 +++ b/verl-subagent-union-workflow/agents/workflow-supervisor.md
 @@ -1,19 +1,14 @@
@@ -1768,7 +1575,7 @@ index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b72499
  
  # Supervision Gates
  
-@@ -35,29 +30,44 @@ The audited result is not transition-safe unless all required gates are checked
+@@ -35,45 +30,67 @@ The audited result is not transition-safe unless all required gates are checked
  2. The main-thread work-order artifact for that phase is present when required.
  3. The subagent output matches the requested phase and does not skip ahead.
  4. Required evidence paths exist or missing evidence is explicitly blocked.
@@ -1788,10 +1595,11 @@ index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b72499
 +11. For attempt-0 runners, the work-order plus persisted gate-wrapper artifacts prove container role/identity, mandatory mounts, runtime imports, source fingerprint, Ray/topology, NPU resources, script/config fields, and phase mode before training. For retries, require the repair launch contract and runner guidance as well.
 +12. Topology pair progression is respected: baseline precedes optimized for the same topology, same-topology comparison precedes the next topology, and the default order is single-node → dual-node → multi-node unless an explicit user-approved skip is recorded.
 +13. The next phase is allowed only when all required gates pass.
-+14. For a retried runner result, the repair attempt is closed in the append-only repair index with an outcome and the runner result path.
++14. Retry closure follows two supervision stages: when auditing the retried runner, the repair attempt must still be open and the verdict mandates closure-only dispatch; when auditing that closure-only repair result, the phase index must contain the approved outcome and runner result path before transition is allowed.
 +15. `execution_model` is `dual-container`: baseline used only the baseline container set, optimized used only the optimized set, and no git worktree switching/restoration was used as the execution boundary.
 +16. Optimized started only after same-topology baseline success and a persisted baseline-to-optimized cleanup artifact proved workflow-owned Ray/process/port/NPU release.
 +17. Comparator and next-topology dispatch are allowed only after the same-topology optimized result has a persisted cleanup artifact proving workflow-owned Ray/process/port/NPU release.
++18. Workspace ownership is valid: the user supplied an absolute `workflow_workspace`; Baseline artifacts are real-path descendants of `<workflow_workspace>/baseline`, Optimized artifacts of `<workflow_workspace>/optimized`, and controller/comparison/debug/report artifacts of `<workflow_workspace>/controller`.
  
  If any gate is missing or cannot be verified, return `transition_allowed: false` with exact blockers and remediation.
  
@@ -1812,12 +1620,15 @@ index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b72499
 +- Reject failed or blocked runner results when `failure.manifest_complete` is false and `failure.missing_evidence` does not explain exactly what is missing.
 +- Route baseline runner failures back to `baseline-preflight-repair` and optimized runner failures back to `optimized-preflight-repair`; do not allow runners to hide those failures with ad-hoc environment repair.
 +- Reject baseline results from optimized-role containers and optimized results from baseline-role containers. Treat shared-host worktrees as invalid implicit runtime sources.
-+- Before approving optimized launch, require `transitions/{topology}/baseline-to-optimized.yaml` with baseline success plus workflow-owned Ray/process/port/NPU cleanup fields.
++- Reject any result with a missing, relative, inferred, mismatched, or escaping workspace path as `workspace_path_violation`. Do not approve a phase based only on path text; verify canonical or real-path containment from persisted artifacts.
++- Before approving optimized launch, require `<baseline_workspace>/runs/{run-id}/{topology}/transition/baseline-to-optimized.yaml` with baseline success plus workflow-owned Ray/process/port/NPU cleanup fields.
 +- Before approving comparator or the next topology, require the optimized result's `post_run_cleanup` booleans and `cleanup_artifact` to prove workflow-owned Ray/process/port/NPU release.
-+- For a runner result with `retry.attempt_id > 0`, read the referenced repair attempt and update only `runs/{run-id}/repair/{phase}/{topology}/index.yaml`. Do not alter project files, attempt files, or runner results.
-+- Before appending a new attempt record, verify `index.yaml` exists and `current_attempt_count < max_attempts`; otherwise block with `max_attempts_reached`.
-+- Verify `runner.retry.result_file` equals the attempt's `planned_retry_result_file` and that the file exists before closing the attempt outcome.
-+- Record `effective` only when the retried runner result is `success`; record `ineffective` when the target failure signature persists; record `inconclusive` for a new failure signature, timeout, or blocked run. Include the append-only retry-result path and a bounded reason.
++- For a runner result with `retry.attempt_id > 0`, read the referenced repair attempt and matching phase index, determine `effective`, `ineffective`, or `inconclusive`, and persist the supervisor verdict only below `<controller_workspace>/runs/{run-id}/supervision/`. Do not write Baseline or Optimized phase roots. Set the next action to a closure-only dispatch of the matching `*-preflight-repair`, which appends the approved outcome to its own phase index.
++- Set `transition_allowed: false` for that first retry verdict because phase-index closure is still pending; this is an ordered closure requirement, not a rejection of the runner result.
++- When auditing a matching preflight-repair result with `closure_only: true`, verify the phase index now contains the exact supervisor-approved outcome and runner result path, then allow transition when all other gates pass.
++- For a repair-ready result, verify `index.yaml` exists, `current_attempt_count == repair_attempt_id`, and `current_attempt_count <= max_attempts`. Require `current_attempt_count < max_attempts` only when authorizing creation of a later attempt; otherwise block with `max_attempts_reached` or `repair_index_mismatch`.
++- Verify `runner.retry.result_file` equals the attempt's `planned_retry_result_file` and that the file exists before issuing the closure verdict.
++- Put `effective` in the verdict only when the retried runner result is `success`; use `ineffective` when the target failure signature persists and `inconclusive` for a new failure signature, timeout, or blocked run. Include the append-only retry-result path and a bounded reason.
 +- Require the next preflight/repair agent to read this index before proposing another fix. An attempt marked `ineffective` must not be retried unchanged without explicit evidence of a materially different condition.
  - Reject phase transitions that start an optimized run before the same-topology baseline is successful, compare different topologies as one pair, or start a larger topology before the current topology's baseline+optimized comparison checkpoint is persisted and approved.
 -- If a failed phase was fixed by `debug-isolator`, require the main thread to re-dispatch the original failed phase agent rather than skipping forward.
@@ -1825,7 +1636,11 @@ index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b72499
  - Keep raw logs path-only. Never paste raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, or real NPU artifacts into main context.
  - Do not mutate project files or run commands except read-only validation when explicitly asked.
  
-@@ -68,12 +78,13 @@ If any gate is missing or cannot be verified, return `transition_allowed: false`
+ # Required Inputs
+ 
+ - `run_id`
++- Canonical `workflow_workspace`, `baseline_workspace`, `optimized_workspace`, and `controller_workspace`
+ - Audited subagent name
  - Audited phase
  - Subagent output or output artifact path
  - Work-order path
@@ -1838,10 +1653,19 @@ index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b72499
  - Delegation lifecycle fields: `delegation_id`, `delegation_status`, `background_output_retrieved`, `retrieved_at`, `artifact_path`, and `delegation_result_path`
  - Topology progression fields when applicable: current topology, previous topology verdict, same-topology baseline checkpoint, same-topology optimized checkpoint, comparison checkpoint, and explicit skip approval if any topology is skipped
 +- For a retried runner result: `retry.attempt_id`, `retry.repair_attempt_file`, retry result path, and repair index path
++- Controller-owned supervisor verdict path below `<controller_workspace>/runs/{run-id}/supervision/`
  
  # Output Format
  
-@@ -94,9 +105,23 @@ gate_results:
+@@ -87,6 +104,7 @@ audited_phase: ""
+ summary: "<=1200 chars"
+ gate_results:
+   work_order: present|missing|not_required|unknown
++  workspace_ownership: ok|blocked|unknown
+   phase_alignment: ok|blocked|unknown
+   evidence_paths: ok|blocked|unknown
+   change_ledger: present|missing|not_required|unknown
+@@ -94,11 +112,27 @@ gate_results:
    delegation_lifecycle: ok|blocked|unknown
    artifact_persistence: ok|blocked|unknown
    summary_index: ok|blocked|not_required|unknown
@@ -1862,408 +1686,19 @@ index c3c9e4433637ba29b143a9e663e8a3a1563b0ec4..3efd9a771956defa7fb5206b04b72499
 +  reason: "<bounded factual reason>"
 +  max_attempts: "<int-or-null>"
 +  current_attempt_count: "<int-or-null>"
++  closure_status: open|closure_required|closed|not_required|blocked|unknown
  findings: []
  evidence_paths: []
++verdict_artifact: "<controller_workspace>/runs/{run-id}/supervision/{audited-phase}-{topology}-attempt-{N}.yaml"
  transition_allowed: true|false
-diff --git a/verl-subagent-union-workflow/commands/verl-subagent-union-workflow.md b/verl-subagent-union-workflow/commands/verl-subagent-union-workflow.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..374dd65b250f8f84afec23e2f811e102e7e88046
---- /dev/null
-+++ b/verl-subagent-union-workflow/commands/verl-subagent-union-workflow.md
-@@ -0,0 +1,15 @@
-+---
-+description: Manually start or continue the dual-container VERL baseline-vs-optimized workflow
-+agent: verl-workflow-controller
-+subtask: false
-+---
-+
-+The user explicitly invoked `/verl-subagent-union-workflow`. This explicit slash-command invocation is the only valid activation signal for this workflow.
-+
-+Follow the controller contract injected below exactly. It is a command asset, not an agent-discoverable Skill. Do not activate this workflow from ordinary natural-language requests.
-+
-+!`set -eu; if [ -f ".opencode/contracts/verl-workflow-controller.md" ]; then cat ".opencode/contracts/verl-workflow-controller.md"; else config_dir="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"; cat "$config_dir/contracts/verl-workflow-controller.md"; fi`
-+
-+User arguments:
-+
-+$ARGUMENTS
-diff --git a/verl-subagent-union-workflow/contracts/verl-workflow-controller.md b/verl-subagent-union-workflow/contracts/verl-workflow-controller.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..0a8692b93b5c7bb92e9d7e5dedb8889e43086f37
---- /dev/null
-+++ b/verl-subagent-union-workflow/contracts/verl-workflow-controller.md
-@@ -0,0 +1,367 @@
-+# VERL Subagent Union Workflow
-+
-+This command-loaded contract makes the current assistant act as the **main workflow controller** for the user's VERL + Ascend/NPU baseline-vs-optimized comparison workflow. The controller coordinates phase subagents, persists dispatch state, and enforces supervisor gates. It is not a phase worker.
-+
-+## Non-negotiable controller boundary
-+
-+The main agent/controller is **forbidden** from personally doing phase work. If the controller is about to inspect logs, validate an environment, run training, edit optimization code, compare metrics, debug failures, summarize evidence, or write the final report, it must stop and dispatch the matching workflow subagent instead.
-+
-+Allowed controller actions only:
-+
-+- intake and missing-input questions
-+- project/workspace discovery and confirmation
-+- creation of run-state directories and copying the unchanged canonical gate-wrapper template into the confirmed workspace
-+- gate checks and phase-state updates
-+- work-order, delegation, sessions, and supervisor-verdict bookkeeping
-+- background subagent dispatch and background-output retrieval
-+- bounded synthesis of subagent artifacts
-+- blocking the phase when routing or required evidence is invalid
-+
-+Before every `bash`, file read of bulky evidence, file edit, or analysis step, answer this internally:
-+
-+```text
-+Is this action phase-worker work?
-+- baseline launch/readiness/artifact validation → baseline-runner
-+- baseline failure repair → baseline-preflight-repair
-+- optimized launch/readiness/artifact validation → optimized-runner
-+- optimized failure repair → optimized-preflight-repair
-+- metrics comparison/verdict → benchmark-comparator
-+- bulky log/profiler/metric extraction → run-evidence-analyst
-+- non-runner root-cause analysis/debug repair → debug-isolator
-+- final report/archive manifest → experiment-reporter
-+- phase gate audit → workflow-supervisor
-+
-+If yes: stop and dispatch that subagent.
-+```
-+
-+## Active phase agents
-+
-+```text
-+baseline-preflight-repair
-+baseline-runner
-+optimized-preflight-repair
-+optimized-runner
-+benchmark-comparator
-+workflow-supervisor
-+run-evidence-analyst
-+debug-isolator
-+experiment-reporter
-+workflow-generalist
-+```
-+
-+## Hard dispatch allowlist
-+
-+The controller may dispatch only the active phase agents listed above. For every dispatch, set `task(..., run_in_background=true)` and record the `background_task_id` and `child_session_id` in `sessions.md`.
-+
-+## Required intake gate
-+
-+Before dispatching any runner, confirm:
-+
-+- `workflow_workspace`: directory for `runs/`, scripts, evidence, and reports
-+- `gate_wrapper_script`: absolute workspace path to the canonical gate-wrapper copy and its source hash
-+- `container_creation_script`: absolute executable path to `create_role_container.sh`
-+- `execution_model`: must be `dual-container`
-+- `execution_order`: default and recommended value is `sequential`
-+- `baseline_container`: existing name per node, or target name plus a user-confirmed image/runtime plan when it must be created
-+- `optimized_container`: existing name per node, or target name plus a user-confirmed image/runtime plan when it must be created
-+- `baseline_source_root`: container-local VERL source root, normally `/vllm-workspace/verl`
-+- `optimized_source_root`: container-local VERL source root, normally `/vllm-workspace/verl`
-+- `topology_target`: `single-node`, `dual-node`, `multi-node`, or `all`
-+- NPU card count for the selected topology
-+- `model_path_or_id`
-+- `train_dataset_path`
-+- `eval_dataset_path` (or confirm none is needed)
-+- `total_training_steps` (default 15)
-+- `batch_size` (default 128)
-+- `tp` (default 1)
-+- `comparison_metrics`
-+
-+Do not require a training script path from the user. On attempt 0, the matching runner discovers the existing script and exact launch command read-only inside its assigned container. If the script or command must be created or repaired, the runner returns `blocked` and the matching repair agent owns that change.
-+
-+## Dual-container execution contract
-+
-+- Do not create, restore, switch, select, or inspect baseline/optimized git worktrees as workflow execution sources.
-+- Baseline and optimized are isolated by container identity. The baseline runner may execute only in the baseline container set; the optimized runner may execute only in the optimized container set.
-+- For multi-node topologies, every node has a baseline-role container and an optimized-role container. These form two logical container sets; do not place baseline on one hardware set and optimized on another.
-+- Run the two container sets sequentially on the same approved NPU allocation unless the user explicitly approves a different isolation plan. Baseline must release its workflow-owned Ray, ports, processes, and NPU allocation before optimized starts.
-+- Both container roles must mount `/mnt/disk2t:/mnt/disk2t` and `/mnt/sfs_turbo:/mnt/sfs_turbo`. Prefer `--runtime ascend --privileged --network host --ipc host --cgroupns host --security-opt label=disable` when creation is required and compatible with the host.
-+- Shared mounts are for models, datasets, run artifacts, and explicitly approved inputs. Do not use a shared host worktree as the implicit runtime VERL source.
-+- Verify the actual `verl` and `vllm` import locations inside every role container with Python import discovery and `pip show`; record a source fingerprint and package/runtime manifest for each role.
-+- Container creation is a repair action: an attempt-0 runner that finds its assigned container missing returns `blocked` with evidence; only the matching `*-preflight-repair` may create or repair that role container from the confirmed image/runtime contract.
-+- The work-order must contain the absolute `container_creation_script` path. The repair agent must use that path for initial role-container creation. The script refuses replacement, mounts both mandatory shared paths, applies the Ascend runtime baseline, and verifies mounts plus `npu-smi` before the retry contract is emitted.
-+- The two roles should use the same base image digest and runtime/package versions. Any difference other than the approved optimized implementation must be recorded and will normally make the comparison `incomparable`.
-+
-+## Default phase order
-+
-+```text
-+intake
-+→ baseline-runner
-+→ workflow-supervisor
-+→ optimized-runner
-+→ workflow-supervisor
-+→ benchmark-comparator
-+→ workflow-supervisor
-+→ experiment-reporter
-+→ workflow-supervisor
-+→ final controller summary
-+```
-+
-+For `topology_target=all`, run comparison units in order: single-node → dual-node → multi-node. Do not start the next topology until the current topology comparison has supervisor approval.
-+
-+## Topology pair progression
-+
-+For each topology comparison unit:
-+
-+```text
-+baseline-runner(topology=N, attempt=0)
-+→ workflow-supervisor
-+→ optimized-runner(topology=N, attempt=0)
-+→ workflow-supervisor
-+→ benchmark-comparator(topology=N)
-+→ workflow-supervisor
-+```
-+
-+Rules:
-+
-+- Always run baseline before optimized for the same topology.
-+- Never dispatch a repair agent before its matching runner has persisted a `blocked`, `failed`, or `timeout` result for that topology.
-+- A failed/blocked baseline routes to `baseline-preflight-repair` and then retries `baseline-runner`; a failed/blocked optimized run routes to `optimized-preflight-repair` and then retries `optimized-runner`.
-+- Do not start optimized until baseline success and the baseline-to-optimized cleanup gate are both approved.
-+- A baseline result with unproven cleanup is `blocked`, not `success`; it routes to `baseline-preflight-repair` as `cleanup_unproven`.
-+- Do not dispatch the comparator or the next topology until the optimized result has a persisted post-run cleanup artifact proving workflow-owned Ray/process/port/NPU release.
-+- Compare baseline and optimized only within the same topology.
-+- If a topology comparison is `invalid_run`, `incomparable`, `failed`, or `blocked`, do not continue to the next topology unless the user explicitly overrides.
-+
-+## Training launch gate wrapper
-+
-+`baseline-runner` and `optimized-runner` must never invoke a VERL training script directly. They must launch training only through the workspace gate wrapper, for example:
-+
-+```text
-+<workspace>/scripts/run_training_with_gates.sh \
-+  --run-id <run-id> \
-+  --phase baseline|optimized \
-+  --container-role baseline|optimized \
-+  --container-name <assigned-container> \
-+  --source-root <container-local-verl-root> \
-+  --topology <topology> \
-+  --expected-nodes <n> \
-+  --expected-npus <n> \
-+  --training-script <runner-discovered-or-repair-confirmed-script> \
-+  --container-identity-evidence <passed host-side container inspection artifact> \
-+  --topology-evidence <passed topology/inventory/NPU evidence artifact> \
-+  --actor-env-evidence <passed actor launch-environment evidence artifact> \
-+  --source-parity-evidence <passed cross-node source-fingerprint evidence artifact> \
-+  --metric-policy-evidence <passed metric-policy evidence artifact> \
-+  --phase-mode-evidence <passed baseline-or-optimized-mode evidence artifact>
-+```
-+
-+The wrapper template is available at `verl-subagent-union-workflow/scripts/run_training_with_gates.sh` in the source adapter. The controller may copy the unchanged template into `<workspace>/scripts/run_training_with_gates.sh` as workspace bookkeeping. Any runtime-specific customization belongs to the matching repair agent after a runner failure. The runner invokes the wrapper inside its assigned container, normally through `docker exec <container> bash <workspace>/scripts/run_training_with_gates.sh ...`. Direct execution of a training script outside the wrapper is invalid evidence; the runner result must be blocked with `routing_blocker: direct_training_launch`.
-+
-+Before invoking the wrapper, the runner must create the six input evidence artifacts above from actual container inspection, inventory/NPU checks, actor launch settings, source fingerprints, metric policy, and role-mode checks. Each artifact must contain matching `phase` and `topology` plus `status: passed`; the wrapper fails closed otherwise. It also checks mounts, runtime imports, stale Ray/process state, readable training script, and `npu-smi` itself. `--dry-run` is permitted only to verify gates and must not be treated as a training result.
-+
-+The wrapper must execute these checks before launching real training and write machine-readable artifacts:
-+
-+```text
-+<phase>/<topology>/preflight/
-+├── ray-cleanup.yaml
-+├── container-identity.yaml
-+├── mount-verify.yaml
-+├── runtime-source.yaml
-+├── source-fingerprint.yaml
-+├── topology-verify.yaml
-+├── actor-env-verify.yaml
-+├── source-parity.yaml
-+├── metric-policy.yaml
-+├── launch-preflight.yaml
-+├── baseline-mode-verify.yaml or optimized-mode-verify.yaml
-+└── launch-allow.yaml
-+```
-+
-+`launch-allow.yaml` must include:
-+
-+```yaml
-+training_launch_allowed: true
-+ray_cleanup_passed: true
-+container_role_verified: true
-+container_identity_verified: true
-+shared_mounts_verified: true
-+runtime_source_verified: true
-+source_fingerprint_recorded: true
-+topology_verified: true
-+actor_network_env_verified: true
-+source_parity_verified: true
-+metric_policy_verified: true
-+launch_preflight_verified: true
-+phase_mode_verified: true
-+training_started_after_preflight: true
-+training_launch_method: gate_wrapper
-+training_script_directly_invoked: false
-+```
-+
-+## Workflow-scoped background dispatch
-+
-+Every `verl-subagent-union-workflow` subagent dispatch must be asynchronous and background-only. This rule applies only to this workflow.
-+
-+For every phase agent:
-+
-+1. Set `dispatch_mode: background` in the delegation record before calling `task()`.
-+2. Call `task(..., run_in_background=true)`.
-+3. Record the returned `background_task_id` in the delegation record and `sessions.md`.
-+4. Record `child_session_id` when the runtime exposes it.
-+5. Do not call `background_output` until the runtime notifies that the background task has completed.
-+6. After receiving the completion notification, call `background_output` with the recorded `background_task_id` and set `background_output_retrieved: true`.
-+7. Only after `background_output_retrieved` is `true`, classify `actual_agent` and dispatch `workflow-supervisor`.
-+
-+`workflow-supervisor` itself must also be dispatched with `run_in_background=true`, its `background_task_id` and `child_session_id` recorded, and its output retrieved via `background_output` before the controller uses the verdict.
-+
-+## Delegation lifecycle contract
-+
-+Every workflow subagent dispatch has a stable `delegation_id` and follows:
-+
-+```text
-+registered → running → complete | error | timeout | cancelled
-+```
-+
-+- `delegation_id` must be stable across `sessions.md`, supervisor input, and any summary/index entry.
-+- Create the delegation record before dispatch with `delegation_status: registered`.
-+- Set `delegation_status: running` after the background task id is recorded.
-+- Set one terminal status exactly once after `background_output` is retrieved.
-+- Terminal status is immutable.
-+- Store one canonical YAML record at `runs/{run-id}/delegations/{delegation_id}.yaml`. It must include `delegation_id`, expected/actual agent, phase, dispatch mode, `background_task_id`, `child_session_id` when available, lifecycle status, `background_output_retrieved`, `retrieved_at`, `artifact_path`, `delegation_result_path`, title, bounded summary, evidence paths, blocker, and next action.
-+- `sessions.md` is an index only: each row links to that canonical record. The supervisor receives the canonical record path, never a chat-only reconstruction.
-+
-+## Session ledger structure
-+
-+Use this structure for `runs/{run-id}/sessions.md`:
-+
-+```markdown
-+# Session: {run-id}
-+Updated: {ISO timestamp}
-+
-+## Goal
-+{One sentence success criterion}
-+
-+## Confirmed Inputs
-+- Workflow workspace:
-+- Execution model: dual-container
-+- Execution order: sequential
-+- Baseline container set:
-+- Optimized container set:
-+- Baseline source root:
-+- Optimized source root:
-+- Topology target:
-+- NPU devices / card count:
-+- Model:
-+- Train dataset:
-+- Eval/test dataset:
-+- Steps:
-+- Batch size:
-+- TP:
-+- Metrics:
-+
-+## Current Phase
-+- State: pending | ready | running | supervision | passed | failed | blocked
-+- Active phase:
-+- Current topology: single-node | dual-node | multi-node | custom | none
-+- Next controller action:
-+
-+## Topology Pair Progress
-+| Topology | Baseline | Optimized | Comparison | Supervisor | Next |
-+|---|---|---|---|---|---|
-+
-+## Delegations
-+| Delegation | Expected agent | Background task | Lifecycle | Retrieved at | Delegation record | Primary artifact | Summary |
-+|---|---|---|---|---|---|---|---|
-+
-+## Latest Verdict
-+- Supervisor verdict:
-+- Blocker:
-+- Next action:
-+```
-+
-+Do not paste raw logs, full tracebacks, or dense output into `sessions.md`.
-+
-+### Runner failures
-+
-+```text
-+baseline-runner failure
-+→ baseline-preflight-repair reads evidence, diagnoses, repairs, returns retry-ready launch contract
-+→ baseline-runner retries from the new launch contract
-+→ workflow-supervisor closes the attempt outcome
-+
-+optimized-runner failure
-+→ optimized-preflight-repair reads evidence, diagnoses, repairs, returns retry-ready launch contract
-+→ optimized-runner retries from the new launch contract
-+→ workflow-supervisor closes the attempt outcome
-+```
-+
-+### Non-runner failures
-+
-+```text
-+benchmark-comparator / experiment-reporter / workflow-supervisor failure
-+→ debug-isolator
-+→ workflow-supervisor
-+→ retry the original failed phase
-+```
-+
-+### Repair-attempt closure
-+
-+Use `runs/{run-id}/repair/{phase}/{topology}/index.yaml` as the append-only history for failed phase episodes. The debug/repair agent reads this index before proposing a new fix.
-+
-+```text
-+runner failure
-+→ preflight-repair reads index.yaml + original evidence paths
-+→ preflight-repair writes attempts/attempt-N.yaml with status repair_ready
-+→ runner re-runs using that attempt id
-+→ runner writes only training facts and the new result path
-+→ workflow-supervisor appends effective | ineffective | inconclusive
-+→ next preflight-repair reads the index before proposing another fix
-+```
-+
-+Rules:
-+
-+- `repair_ready` means only that the repair can be tested; it is not a claim that training is fixed.
-+- Only a successful runner retry can establish `effective`.
-+- A `fix_fingerprint` previously marked `ineffective` must not be proposed unchanged unless new evidence explains the material difference.
-+- Runner retry results are written to append-only paths and never overwrite prior results.
-+- `max_attempts` is recorded in the index and enforced by `workflow-supervisor` before approving another retry.
-+
-+## Required run state files
-+
-+```text
-+runs/{run-id}/
-+├── sessions.md
-+├── intake/work-order.md
-+├── delegations/{delegation-id}.yaml
-+├── containers/baseline.yaml
-+├── containers/optimized.yaml
-+├── transitions/{topology}/baseline-to-optimized.yaml
-+├── baseline/{topology}/result.yaml
-+├── optimized/{topology}/result.yaml
-+├── comparison/{topology}/result.yaml
-+└── repair/{phase}/{topology}/
-+    ├── index.yaml
-+    └── attempts/attempt-N.yaml
-+```
-+
-+## Controller loop
-+
-+1. Confirm required inputs and write `intake/work-order.md`.
-+2. For each topology unit:
-+   - Dispatch `baseline-runner` attempt 0 directly from the work-order, then dispatch `workflow-supervisor`.
-+   - If baseline is blocked/failed/timed out, dispatch `baseline-preflight-repair`, supervise its retry contract, and retry `baseline-runner`.
-+   - After baseline succeeds, require `transitions/{topology}/baseline-to-optimized.yaml` to prove workflow-owned Ray/process/port/NPU cleanup before optimized starts. If cleanup is unproven, the runner result is `blocked` and routes to `baseline-preflight-repair`.
-+   - Dispatch `optimized-runner` attempt 0 directly from the work-order, then dispatch `workflow-supervisor`.
-+   - If optimized is blocked/failed/timed out, dispatch `optimized-preflight-repair`, supervise its retry contract, and retry `optimized-runner`.
-+   - Dispatch `benchmark-comparator` only after both runs succeed and optimized post-run cleanup is proven by its cleanup artifact.
-+3. Never use gitworktree switching as a phase transition or recovery mechanism. On runner failure, repair only the assigned role container and its container-local runtime source.
-+4. On non-runner failure, route to `debug-isolator`.
-+5. After all topologies, dispatch `experiment-reporter` and then summarize approved artifacts to the user.
-+
-+## Verified RCA archive gate
-+
-+Any subagent that identifies a verified root cause and fix must complete an Experience Vault archive review before the controller continues. The controller must not advance when `archive_gate.archive_review_done` is missing or false.
-+
-+## Session ledger
-+
-+Maintain `runs/{run-id}/sessions.md` with confirmed inputs, current phase, topology progress, delegations, and latest supervisor verdict. Do not paste raw logs, full tracebacks, or dense output into `sessions.md`.
+-next_action: "proceed|retry audited phase|route debug-isolator|ask user|blocked"
++next_action: "proceed|close repair attempt via matching preflight-repair|retry audited phase|route debug-isolator|ask user|blocked"
+ ```
 diff --git a/verl-subagent-union-workflow/manifest.md b/verl-subagent-union-workflow/manifest.md
-index 63791c6fe0280f2ac525fcc15f3fe398c8a7625d..07d0fabe309c1e5a77d492ea1c0e50b2833c7cb7 100644
+index 63791c6..bfb0728 100644
 --- a/verl-subagent-union-workflow/manifest.md
 +++ b/verl-subagent-union-workflow/manifest.md
-@@ -1,33 +1,32 @@
+@@ -1,33 +1,36 @@
  # VERL subagent union workflow manifest
  
 -## Skill
@@ -2304,10 +1739,14 @@ index 63791c6fe0280f2ac525fcc15f3fe398c8a7625d..07d0fabe309c1e5a77d492ea1c0e50b2
  
 -The main agent is controller-only. It must not do phase work such as environment validation, training, implementation, comparison, bulky evidence reading, RCA/debug, or final report generation.
 +The workflow is unavailable until the user explicitly invokes `/verl-subagent-union-workflow`. The dedicated controller must not do phase work such as environment validation, training, comparison, bulky evidence reading, RCA/debug, or final report generation. The scope plugin rejects phase-agent execution from non-activated sessions.
++
++### Workspace ownership
++
++Every run requires an absolute `workflow_workspace` explicitly supplied by the user. The controller creates and owns four canonical roots: `<workflow_workspace>/baseline`, `<workflow_workspace>/optimized`, `<workflow_workspace>/controller`, and `<workflow_workspace>/scripts`. Baseline and Optimized agents must keep every version and intermediate artifact below their respective phase root; `workflow-supervisor` blocks any escaping or mismatched path.
  
  ### Delegation lifecycle
  
-@@ -39,10 +38,12 @@ registered → running → complete | error | timeout | cancelled
+@@ -39,10 +42,12 @@ registered → running → complete | error | timeout | cancelled
  
  Terminal status is immutable. A phase is not reviewable until the required structured artifacts are persisted.
  
@@ -2323,7 +1762,7 @@ index 63791c6fe0280f2ac525fcc15f3fe398c8a7625d..07d0fabe309c1e5a77d492ea1c0e50b2
  
  Runner state lines are intentionally short:
  
-@@ -57,7 +58,28 @@ blocked/failed: 检查失败或训练失败，说明卡在哪，训练是否启
+@@ -57,7 +62,28 @@ blocked/failed: 检查失败或训练失败，说明卡在哪，训练是否启
  Default progression:
  
  ```text
@@ -2335,7 +1774,7 @@ index 63791c6fe0280f2ac525fcc15f3fe398c8a7625d..07d0fabe309c1e5a77d492ea1c0e50b2
 +
 +### Repair-attempt history
 +
-+Retry attempts are recorded append-only under `runs/{run-id}/repair/{phase}/{topology}/`:
++Retry attempts are recorded append-only under `<baseline_workspace>/runs/{run-id}/{topology}/repair/` or `<optimized_workspace>/runs/{run-id}/{topology}/repair/`:
 +
 +```text
 +index.yaml
@@ -2348,493 +1787,14 @@ index 63791c6fe0280f2ac525fcc15f3fe398c8a7625d..07d0fabe309c1e5a77d492ea1c0e50b2
 +
 +### Gate wrapper
 +
-+Training must launch only through the workspace-local gate wrapper (`<workspace>/scripts/run_training_with_gates.sh`). The wrapper produces `launch-allow.yaml` and preflight artifacts before any real training starts.
++Training must launch only through the workspace-local gate wrapper (`<workflow_workspace>/scripts/run_training_with_gates.sh`). The wrapper requires safe absolute paths, a phase-owned `output_dir`, a controller-owned work-order, and a non-symlink training script below the trusted source root. It rejects replayed, duplicated, symlinked, or topology-size-mismatched evidence; validates canonical persistent output bindings and the training-script hash; constrains common runtime output environments; and produces container-owned preflight artifacts, an aggregate evidence hash, and a persistent-output manifest. Multi-node real launch fails closed unless the wrapper validates the complete container set and hashes in the phase-owned topology manifest.
 +
 +### Role-container creation
 +
 +When an attempt-0 runner is blocked because its assigned role container is missing, only the matching repair agent may call `scripts/create_role_container.sh`. It requires a confirmed image/name/role, refuses to replace an existing container, applies the Ascend runtime baseline, mounts `/mnt/disk2t` and `/mnt/sfs_turbo`, and verifies both mounts plus NPU visibility.
-diff --git a/verl-subagent-union-workflow/plugins/verl-workflow-scope.ts b/verl-subagent-union-workflow/plugins/verl-workflow-scope.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..70becb66ee2785a02098d12f4923755a55923ff5
---- /dev/null
-+++ b/verl-subagent-union-workflow/plugins/verl-workflow-scope.ts
-@@ -0,0 +1,178 @@
-+const WORKFLOW_COMMAND = "verl-subagent-union-workflow"
-+
-+const RESTRICTED_AGENTS = new Set<string>([
-+  "verl-workflow-controller",
-+  "baseline-preflight-repair",
-+  "baseline-runner",
-+  "optimized-preflight-repair",
-+  "optimized-runner",
-+  "benchmark-comparator",
-+  "workflow-supervisor",
-+  "run-evidence-analyst",
-+  "debug-isolator",
-+  "experiment-reporter",
-+  "workflow-generalist",
-+])
-+
-+type SessionLookup = {
-+  readonly path: { readonly id: string }
-+  readonly query: { readonly directory: string }
-+}
-+
-+type PluginClient = {
-+  readonly session: {
-+    get(input: SessionLookup): Promise<{ readonly data?: { readonly parentID?: string } }>
-+    messages(input: SessionLookup): Promise<{ readonly data?: readonly { readonly info: unknown }[] }>
-+  }
-+}
-+
-+type PluginContext = {
-+  readonly client: PluginClient
-+  readonly directory: string
-+}
-+
-+type ChatParamsInput = {
-+  readonly sessionID: string
-+  readonly agent: string
-+}
-+
-+type CommandInput = {
-+  readonly command: string
-+  readonly sessionID: string
-+  readonly arguments?: string
-+}
-+
-+type ToolInput = {
-+  readonly tool: string
-+  readonly sessionID: string
-+  readonly callID?: string
-+}
-+
-+type ToolOutput = {
-+  readonly args: unknown
-+}
-+
-+class WorkflowScopeViolation extends Error {
-+  constructor(agent: string) {
-+    super(
-+      `Agent ${agent} is restricted to the manually invoked /${WORKFLOW_COMMAND} workflow. Invoke that slash command first.`,
-+    )
-+    this.name = "WorkflowScopeViolation"
-+  }
-+}
-+
-+function isRecord(value: unknown): value is Record<string, unknown> {
-+  return typeof value === "object" && value !== null && !Array.isArray(value)
-+}
-+
-+function normalizeRestrictedAgent(value: unknown): string | undefined {
-+  if (typeof value !== "string") return undefined
-+  const normalized = value
-+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
-+    .trim()
-+    .replace(/^[\\/"']+|[\\/"']+$/g, "")
-+    .trim()
-+    .toLowerCase()
-+  return RESTRICTED_AGENTS.has(normalized) ? normalized : undefined
-+}
-+
-+function findInlineTeamRestrictedAgent(value: unknown): string | undefined {
-+  if (!isRecord(value)) return undefined
-+  const inlineSpec = value.inline_spec
-+  if (!isRecord(inlineSpec) || !Array.isArray(inlineSpec.members)) return undefined
-+  for (const member of inlineSpec.members) {
-+    if (!isRecord(member)) continue
-+    const restrictedAgent = normalizeRestrictedAgent(member.subagent_type)
-+    if (restrictedAgent) return restrictedAgent
-+  }
-+  return undefined
-+}
-+
-+function findDelegatedRestrictedAgent(tool: string, args: unknown): string | undefined {
-+  if (!isRecord(args)) return undefined
-+  if (tool === "task" || tool === "call_omo_agent") {
-+    return normalizeRestrictedAgent(args.subagent_type)
-+  }
-+  if (tool === "spawn_agent") {
-+    const directAgent = normalizeRestrictedAgent(args.agent)
-+    if (directAgent) return directAgent
-+    if (!Array.isArray(args.agents)) return undefined
-+    for (const item of args.agents) {
-+      if (!isRecord(item)) continue
-+      const restrictedAgent = normalizeRestrictedAgent(item.agent)
-+      if (restrictedAgent) return restrictedAgent
-+    }
-+    return undefined
-+  }
-+  return tool === "team_create" ? findInlineTeamRestrictedAgent(args) : undefined
-+}
-+
-+async function getSessionParent(client: PluginClient, directory: string, sessionID: string): Promise<string | undefined> {
-+  const response = await client.session.get({ path: { id: sessionID }, query: { directory } })
-+  return response.data?.parentID
-+}
-+
-+async function getSessionRestrictedAgent(
-+  client: PluginClient,
-+  directory: string,
-+  sessionID: string,
-+): Promise<string | undefined> {
-+  const response = await client.session.messages({ path: { id: sessionID }, query: { directory } })
-+  for (const message of response.data ?? []) {
-+    if (!isRecord(message.info)) continue
-+    const restrictedAgent = normalizeRestrictedAgent(message.info.agent)
-+    if (restrictedAgent) return restrictedAgent
-+  }
-+  return undefined
-+}
-+
-+export const VerlWorkflowScope = (async (context?: PluginContext) => {
-+  const activatedSessions = new Set<string>()
-+  const client = context?.client
-+  const directory = context?.directory
-+
-+  const isAuthorizedSession = async (sessionID: string): Promise<boolean> => {
-+    if (activatedSessions.has(sessionID)) return true
-+    if (!client || !directory) return false
-+    const parentID = await getSessionParent(client, directory, sessionID)
-+    return parentID !== undefined && activatedSessions.has(parentID)
-+  }
-+
-+  return {
-+    "command.execute.before": async (input: CommandInput) => {
-+      if (input.command === WORKFLOW_COMMAND || input.command === `/${WORKFLOW_COMMAND}`) {
-+        activatedSessions.add(input.sessionID)
-+      }
-+    },
-+    "tool.execute.before": async (input: ToolInput, output: ToolOutput) => {
-+      if (input.tool === "task" && isRecord(output.args) && typeof output.args.task_id === "string") {
-+        if (activatedSessions.has(input.sessionID)) return
-+        if (!client || !directory) return
-+        const targetSessionID = output.args.task_id.trim()
-+        if (activatedSessions.has(targetSessionID)) throw new WorkflowScopeViolation("workflow continuation")
-+        const parentID = await getSessionParent(client, directory, targetSessionID)
-+        if (parentID && activatedSessions.has(parentID)) {
-+          throw new WorkflowScopeViolation("workflow child continuation")
-+        }
-+        const restrictedAgent = await getSessionRestrictedAgent(client, directory, targetSessionID)
-+        if (restrictedAgent) throw new WorkflowScopeViolation(restrictedAgent)
-+        return
-+      }
-+      const restrictedAgent = findDelegatedRestrictedAgent(input.tool, output.args)
-+      if (restrictedAgent && !activatedSessions.has(input.sessionID)) {
-+        throw new WorkflowScopeViolation(restrictedAgent)
-+      }
-+    },
-+    "chat.params": async (input: ChatParamsInput) => {
-+      const restrictedAgent = normalizeRestrictedAgent(input.agent)
-+      if (restrictedAgent && !(await isAuthorizedSession(input.sessionID))) {
-+        throw new WorkflowScopeViolation(restrictedAgent)
-+      }
-+    },
-+    event: async ({ event }: { readonly event: unknown }) => {
-+      if (!isRecord(event) || event.type !== "session.deleted" || !isRecord(event.properties)) return
-+      const info = event.properties.info
-+      if (isRecord(info) && typeof info.id === "string") activatedSessions.delete(info.id)
-+    },
-+  }
-+})
-diff --git a/verl-subagent-union-workflow/scripts/create_role_container.sh b/verl-subagent-union-workflow/scripts/create_role_container.sh
-new file mode 100755
-index 0000000000000000000000000000000000000000..fd30c547d021356614c55a7310dc80802a29053a
---- /dev/null
-+++ b/verl-subagent-union-workflow/scripts/create_role_container.sh
-@@ -0,0 +1,60 @@
-+#!/usr/bin/env bash
-+# Create one role container for verl-subagent-union-workflow.
-+# This script is intentionally fail-closed: it never replaces an existing
-+# container and is meant to be called only by the matching repair agent after
-+# a runner has persisted a blocked result caused by a missing role container.
-+
-+set -euo pipefail
-+
-+ROLE=""
-+NAME=""
-+IMAGE=""
-+
-+usage() {
-+  cat <<'EOF'
-+Usage: create_role_container.sh --role baseline|optimized --name NAME --image IMAGE
-+EOF
-+}
-+
-+while [[ $# -gt 0 ]]; do
-+  case "$1" in
-+    --role) ROLE="$2"; shift 2 ;;
-+    --name) NAME="$2"; shift 2 ;;
-+    --image) IMAGE="$2"; shift 2 ;;
-+    -h|--help) usage; exit 0 ;;
-+    *) usage >&2; exit 2 ;;
-+  esac
-+done
-+
-+if [[ "$ROLE" != "baseline" && "$ROLE" != "optimized" ]] || [[ -z "$NAME" || -z "$IMAGE" ]]; then
-+  usage >&2
-+  exit 2
-+fi
-+
-+if docker container inspect "$NAME" >/dev/null 2>&1; then
-+  echo "refusing to replace existing container: $NAME" >&2
-+  exit 3
-+fi
-+
-+docker run -d \
-+  --name "$NAME" \
-+  --runtime ascend \
-+  --privileged \
-+  --network host \
-+  --ipc host \
-+  --cgroupns host \
-+  --security-opt label=disable \
-+  --env "VERL_WORKFLOW_CONTAINER_ROLE=$ROLE" \
-+  --volume /mnt/disk2t:/mnt/disk2t \
-+  --volume /mnt/sfs_turbo:/mnt/sfs_turbo \
-+  "$IMAGE" \
-+  bash -lc 'exec tail -f /dev/null' >/dev/null
-+
-+docker exec "$NAME" test -d /mnt/disk2t
-+docker exec "$NAME" test -d /mnt/sfs_turbo
-+docker exec "$NAME" bash -lc 'command -v npu-smi >/dev/null && npu-smi info >/dev/null'
-+
-+printf 'role: %s\ncontainer: %s\nimage_id: %s\n' \
-+  "$ROLE" \
-+  "$NAME" \
-+  "$(docker inspect --format '{{.Image}}' "$NAME")"
-diff --git a/verl-subagent-union-workflow/scripts/run_training_with_gates.sh b/verl-subagent-union-workflow/scripts/run_training_with_gates.sh
-new file mode 100755
-index 0000000000000000000000000000000000000000..e23214f5c52423f4a021310456752d96232b0dc4
---- /dev/null
-+++ b/verl-subagent-union-workflow/scripts/run_training_with_gates.sh
-@@ -0,0 +1,223 @@
-+#!/usr/bin/env bash
-+# run_training_with_gates.sh
-+# Workspace-local gate wrapper for VERL + Ascend/NPU baseline/optimized training.
-+# The controller may copy this unchanged template into the workspace. A runner
-+# invokes it inside its assigned baseline or optimized container. Runtime-
-+# specific changes are made only by the matching repair agent after a failed or
-+# blocked runner attempt.
-+
-+set -euo pipefail
-+
-+RUN_ID=""
-+PHASE=""
-+TOPOLOGY=""
-+CONTAINER_ROLE=""
-+CONTAINER_NAME=""
-+SOURCE_ROOT=""
-+EXPECTED_NODES=""
-+EXPECTED_NPUS=""
-+TRAINING_SCRIPT=""
-+CONTAINER_IDENTITY_EVIDENCE=""
-+TOPOLOGY_EVIDENCE=""
-+ACTOR_ENV_EVIDENCE=""
-+SOURCE_PARITY_EVIDENCE=""
-+METRIC_POLICY_EVIDENCE=""
-+PHASE_MODE_EVIDENCE=""
-+DRY_RUN=false
-+WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
-+PREFLIGHT_DIR=""
-+TRAINING_ARGS=()
-+
-+while [[ $# -gt 0 ]]; do
-+  case "$1" in
-+    --run-id) RUN_ID="$2"; shift 2 ;;
-+    --phase) PHASE="$2"; shift 2 ;;
-+    --container-role) CONTAINER_ROLE="$2"; shift 2 ;;
-+    --container-name) CONTAINER_NAME="$2"; shift 2 ;;
-+    --source-root) SOURCE_ROOT="$2"; shift 2 ;;
-+    --topology) TOPOLOGY="$2"; shift 2 ;;
-+    --expected-nodes) EXPECTED_NODES="$2"; shift 2 ;;
-+    --expected-npus) EXPECTED_NPUS="$2"; shift 2 ;;
-+    --training-script) TRAINING_SCRIPT="$2"; shift 2 ;;
-+    --container-identity-evidence) CONTAINER_IDENTITY_EVIDENCE="$2"; shift 2 ;;
-+    --topology-evidence) TOPOLOGY_EVIDENCE="$2"; shift 2 ;;
-+    --actor-env-evidence) ACTOR_ENV_EVIDENCE="$2"; shift 2 ;;
-+    --source-parity-evidence) SOURCE_PARITY_EVIDENCE="$2"; shift 2 ;;
-+    --metric-policy-evidence) METRIC_POLICY_EVIDENCE="$2"; shift 2 ;;
-+    --phase-mode-evidence) PHASE_MODE_EVIDENCE="$2"; shift 2 ;;
-+    --dry-run) DRY_RUN=true; shift ;;
-+    --) shift; TRAINING_ARGS=("$@"); break ;;
-+    *) echo "Unknown argument: $1"; exit 1 ;;
-+  esac
-+done
-+
-+if [[ -z "$RUN_ID" || -z "$PHASE" || -z "$CONTAINER_ROLE" || -z "$CONTAINER_NAME" || -z "$SOURCE_ROOT" || -z "$TOPOLOGY" || -z "$EXPECTED_NODES" || -z "$EXPECTED_NPUS" || -z "$TRAINING_SCRIPT" || -z "$CONTAINER_IDENTITY_EVIDENCE" || -z "$TOPOLOGY_EVIDENCE" || -z "$ACTOR_ENV_EVIDENCE" || -z "$SOURCE_PARITY_EVIDENCE" || -z "$METRIC_POLICY_EVIDENCE" || -z "$PHASE_MODE_EVIDENCE" ]]; then
-+  echo "Missing required argument"
-+  exit 1
-+fi
-+
-+if [[ "$PHASE" != "$CONTAINER_ROLE" ]] || [[ "$CONTAINER_ROLE" != "baseline" && "$CONTAINER_ROLE" != "optimized" ]]; then
-+  echo "Container role does not match phase"
-+  exit 1
-+fi
-+
-+PREFLIGHT_DIR="${WORKSPACE}/runs/${RUN_ID}/${PHASE}/${TOPOLOGY}/preflight"
-+mkdir -p "$PREFLIGHT_DIR"
-+
-+LAUNCH_ALLOW="${PREFLIGHT_DIR}/launch-allow.yaml"
-+rm -f "$LAUNCH_ALLOW"
-+
-+# Helper to record a preflight artifact.
-+record() {
-+  local file="$1"
-+  local status="$2"
-+  local detail="$3"
-+  cat > "$file" <<EOF
-+status: $status
-+detail: "$detail"
-+phase: $PHASE
-+topology: $TOPOLOGY
-+expected_nodes: $EXPECTED_NODES
-+expected_npus: $EXPECTED_NPUS
-+training_script: $TRAINING_SCRIPT
-+container_role: $CONTAINER_ROLE
-+container_name: $CONTAINER_NAME
-+source_root: $SOURCE_ROOT
-+EOF
-+}
-+
-+require_passed_evidence() {
-+  local gate="$1"
-+  local evidence="$2"
-+  local output="${PREFLIGHT_DIR}/${gate}.yaml"
-+  if [[ ! -f "$evidence" ]] || ! grep -Eq '^status:[[:space:]]*passed[[:space:]]*$' "$evidence" || ! grep -Eq "^phase:[[:space:]]*${PHASE}[[:space:]]*$" "$evidence" || ! grep -Eq "^topology:[[:space:]]*${TOPOLOGY}[[:space:]]*$" "$evidence"; then
-+    record "$output" "failed" "missing, non-passed, or wrong phase/topology evidence: ${evidence}"
-+    exit 2
-+  fi
-+  record "$output" "passed" "verified evidence artifact: ${evidence}"
-+}
-+
-+# Gate 1: container role and shared mounts
-+echo "[gate] Container identity and shared mounts"
-+require_passed_evidence "container-identity" "$CONTAINER_IDENTITY_EVIDENCE"
-+if [[ ! -d /mnt/disk2t || ! -d /mnt/sfs_turbo ]]; then
-+  record "${PREFLIGHT_DIR}/mount-verify.yaml" "failed" "required /mnt/disk2t or /mnt/sfs_turbo mount is missing"
-+  exit 2
-+fi
-+record "${PREFLIGHT_DIR}/mount-verify.yaml" "passed" "required shared mounts visible"
-+
-+# Gate 2: container-local runtime source
-+echo "[gate] Runtime source"
-+if [[ ! -d "$SOURCE_ROOT" ]]; then
-+  record "${PREFLIGHT_DIR}/runtime-source.yaml" "failed" "container-local source root missing"
-+  exit 2
-+fi
-+if ! python3 - "$SOURCE_ROOT" > "${PREFLIGHT_DIR}/runtime-source.yaml" <<'PY'
-+import importlib.util
-+import json
-+import os
-+import sys
-+
-+source_root = os.path.realpath(sys.argv[1])
-+origins = {}
-+for name in ("verl", "vllm"):
-+    spec = importlib.util.find_spec(name)
-+    origins[name] = None if spec is None or spec.origin is None else os.path.realpath(spec.origin)
-+
-+verl_origin = origins["verl"]
-+if verl_origin is None or not (verl_origin == source_root or verl_origin.startswith(source_root + os.sep)):
-+    raise SystemExit(2)
-+
-+print("status: passed")
-+print("source_root: " + json.dumps(source_root))
-+print("verl_origin: " + json.dumps(origins["verl"]))
-+print("vllm_origin: " + json.dumps(origins["vllm"]))
-+PY
-+then
-+  record "${PREFLIGHT_DIR}/runtime-source.yaml" "failed" "verl import does not resolve under the assigned container-local source root"
-+  exit 2
-+fi
-+python3 -m pip show verl vllm > "${PREFLIGHT_DIR}/package-manifest.txt" 2>&1 || true
-+SOURCE_FINGERPRINT="$(find "$SOURCE_ROOT" -type f -not -path '*/.git/*' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')"
-+record "${PREFLIGHT_DIR}/source-fingerprint.yaml" "passed" "source content fingerprint=${SOURCE_FINGERPRINT}"
-+
-+# Gate 3: workflow-owned Ray/process state must already be clean. The runner
-+# records a blocked result and routes to repair instead of mutating it here.
-+echo "[gate] Ray/process state"
-+if pgrep -af '[v]erl.trainer.main_ppo|[r]aylet|[g]cs_server|[V]LLM::Worker_TP' > "${PREFLIGHT_DIR}/ray-processes.txt"; then
-+  record "${PREFLIGHT_DIR}/ray-cleanup.yaml" "failed" "stale or active workflow processes detected; repair required"
-+  exit 2
-+fi
-+record "${PREFLIGHT_DIR}/ray-cleanup.yaml" "passed" "no stale workflow processes detected"
-+
-+# Gate 4: Topology verification
-+echo "[gate] Topology verification"
-+require_passed_evidence "topology-verify" "$TOPOLOGY_EVIDENCE"
-+
-+# Gate 5: Actor network env
-+echo "[gate] Actor network env"
-+require_passed_evidence "actor-env-verify" "$ACTOR_ENV_EVIDENCE"
-+
-+# Gate 6: Source parity
-+echo "[gate] Source parity"
-+require_passed_evidence "source-parity" "$SOURCE_PARITY_EVIDENCE"
-+
-+# Gate 7: Metric policy
-+echo "[gate] Metric policy"
-+require_passed_evidence "metric-policy" "$METRIC_POLICY_EVIDENCE"
-+
-+# Gate 8: Launch-time preflight
-+echo "[gate] Launch-time preflight"
-+if [[ ! -f "$TRAINING_SCRIPT" || ! -r "$TRAINING_SCRIPT" ]]; then
-+  record "${PREFLIGHT_DIR}/launch-preflight.yaml" "failed" "training script is missing or unreadable"
-+  exit 2
-+fi
-+if ! command -v npu-smi >/dev/null 2>&1 || ! npu-smi info > "${PREFLIGHT_DIR}/npu-smi.txt" 2>&1; then
-+  record "${PREFLIGHT_DIR}/launch-preflight.yaml" "failed" "npu-smi is unavailable or NPU inspection failed"
-+  exit 2
-+fi
-+record "${PREFLIGHT_DIR}/launch-preflight.yaml" "passed" "training script readable and npu-smi inspection succeeded"
-+
-+# Gate 9: Phase mode verification
-+if [[ "$PHASE" == "baseline" ]]; then
-+  require_passed_evidence "baseline-mode-verify" "$PHASE_MODE_EVIDENCE"
-+else
-+  require_passed_evidence "optimized-mode-verify" "$PHASE_MODE_EVIDENCE"
-+fi
-+
-+# Write launch-allow.yaml
-+cat > "$LAUNCH_ALLOW" <<EOF
-+training_launch_allowed: true
-+ray_cleanup_passed: true
-+container_role_verified: true
-+container_identity_verified: true
-+shared_mounts_verified: true
-+runtime_source_verified: true
-+source_fingerprint_recorded: true
-+topology_verified: true
-+actor_network_env_verified: true
-+source_parity_verified: true
-+metric_policy_verified: true
-+launch_preflight_verified: true
-+phase_mode_verified: true
-+training_started_after_preflight: $([[ "$DRY_RUN" == true ]] && echo false || echo true)
-+training_launch_method: gate_wrapper
-+training_script_directly_invoked: false
-+run_id: $RUN_ID
-+phase: $PHASE
-+topology: $TOPOLOGY
-+expected_nodes: $EXPECTED_NODES
-+expected_npus: $EXPECTED_NPUS
-+container_role: $CONTAINER_ROLE
-+container_name: $CONTAINER_NAME
-+source_root: $SOURCE_ROOT
-+source_fingerprint: $SOURCE_FINGERPRINT
-+EOF
-+
-+# Launch real training through the confirmed training script.
-+# The runner must not invoke the training script directly; this wrapper is the only valid launch path.
-+if [[ "$DRY_RUN" == true ]]; then
-+  echo "[gate] dry-run completed; training was not launched"
-+  exit 0
-+fi
-+exec bash "$TRAINING_SCRIPT" "${TRAINING_ARGS[@]}"
 diff --git a/verl-subagent-union-workflow/skills/verl-subagent-union-workflow/SKILL.md b/verl-subagent-union-workflow/skills/verl-subagent-union-workflow/SKILL.md
 deleted file mode 100644
-index 160b120688a977f6687c63f7c858ecbb8d2718d9..0000000000000000000000000000000000000000
+index 160b120..0000000
 --- a/verl-subagent-union-workflow/skills/verl-subagent-union-workflow/SKILL.md
 +++ /dev/null
 @@ -1,972 +0,0 @@
@@ -3810,149 +2770,3 @@ index 160b120688a977f6687c63f7c858ecbb8d2718d9..00000000000000000000000000000000
 -## If inputs are missing
 -
 -Do not guess missing high-risk inputs, and do not silently use discovered candidates. Ask the user to specify or confirm prerequisites that change execution safety or artifact location, such as project root, workflow workspace, model path, dataset path, script path, VERL root, container name/image, NPU device selection, comparison metrics, or whether to start a real training run.
-diff --git a/verl-subagent-union-workflow/tests/bun-test.d.ts b/verl-subagent-union-workflow/tests/bun-test.d.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..00220d13959da0ac6f416ff56e42b1ae8b12802e
---- /dev/null
-+++ b/verl-subagent-union-workflow/tests/bun-test.d.ts
-@@ -0,0 +1,3 @@
-+declare module "bun:test" {
-+  export function test(name: string, operation: () => void | Promise<void>): void
-+}
-diff --git a/verl-subagent-union-workflow/tests/verl-workflow-scope.test.ts b/verl-subagent-union-workflow/tests/verl-workflow-scope.test.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..146abf9e24a524c0e00042e2029e8da7c2583a94
---- /dev/null
-+++ b/verl-subagent-union-workflow/tests/verl-workflow-scope.test.ts
-@@ -0,0 +1,131 @@
-+/// <reference path="./bun-test.d.ts" />
-+
-+import { test } from "bun:test"
-+
-+import { VerlWorkflowScope } from "../plugins/verl-workflow-scope"
-+
-+function requireHook<T>(hook: T | undefined, name: string): T {
-+  if (hook) return hook
-+  throw new Error(`Missing hook: ${name}`)
-+}
-+
-+async function expectBlocked(operation: () => Promise<void>): Promise<void> {
-+  try {
-+    await operation()
-+  } catch (error) {
-+    if (error instanceof Error && error.message.includes("/verl-subagent-union-workflow")) return
-+    throw error
-+  }
-+  throw new Error("Expected restricted-agent execution to be blocked")
-+}
-+
-+test("restricts workflow agents to command-activated sessions", async () => {
-+  const hooks = await VerlWorkflowScope()
-+  const beforeCommand = requireHook(hooks["command.execute.before"], "command.execute.before")
-+  const beforeTool = requireHook(hooks["tool.execute.before"], "tool.execute.before")
-+  const chatParams = requireHook(hooks["chat.params"], "chat.params")
-+  const event = requireHook(hooks.event, "event")
-+
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "ordinary-session", callID: "call-phase" },
-+      { args: { subagent_type: "workflow-supervisor" } },
-+    ),
-+  )
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "ordinary-session", callID: "call-normalized" },
-+      { args: { subagent_type: " Baseline-Runner " } },
-+    ),
-+  )
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "ordinary-session", callID: "call-zero-width" },
-+      { args: { subagent_type: "\u200Bbaseline-runner" } },
-+    ),
-+  )
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "ordinary-session", callID: "call-controller" },
-+      { args: { subagent_type: "verl-workflow-controller" } },
-+    ),
-+  )
-+  await beforeTool(
-+    { tool: "task", sessionID: "ordinary-session", callID: "call-prompt" },
-+    { args: { subagent_type: "oracle", prompt: "Review baseline-runner behavior" } },
-+  )
-+  await beforeTool(
-+    { tool: "task", sessionID: "ordinary-session", callID: "call-resume" },
-+    { args: { task_id: "ses_unrelated_child" } },
-+  )
-+  await expectBlocked(() => chatParams({ sessionID: "ordinary-phase", agent: "baseline-runner" }))
-+  await expectBlocked(() =>
-+    chatParams({ sessionID: "ordinary-controller", agent: "verl-workflow-controller" }),
-+  )
-+
-+  await beforeCommand({ command: "verl-subagent-union-workflow", sessionID: "workflow-session" })
-+  await beforeTool(
-+    { tool: "task", sessionID: "workflow-session", callID: "call-activated" },
-+    { args: { subagent_type: "workflow-supervisor" } },
-+  )
-+  await beforeTool(
-+    { tool: "task", sessionID: "ordinary-session", callID: "call-unrelated" },
-+    { args: { subagent_type: "oracle" } },
-+  )
-+  await chatParams({ sessionID: "workflow-session", agent: "baseline-runner" })
-+  await chatParams({ sessionID: "workflow-session", agent: "verl-workflow-controller" })
-+
-+  await event({
-+    event: {
-+      type: "session.deleted",
-+      properties: { info: { id: "workflow-session" } },
-+    },
-+  })
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "workflow-session", callID: "call-after-delete" },
-+      { args: { subagent_type: "workflow-supervisor" } },
-+    ),
-+  )
-+})
-+
-+test("authorizes controller children but blocks cross-session workflow continuation", async () => {
-+  const hooks = await VerlWorkflowScope({
-+    directory: "/home/l30002999",
-+    client: {
-+      session: {
-+        get: async ({ path }) => ({ data: path.id === "phase-child" ? { parentID: "workflow-root" } : {} }),
-+        messages: async ({ path }) => ({
-+          data: path.id === "phase-child"
-+            ? [
-+                { info: { role: "user" } },
-+                { info: { role: "assistant", agent: "workflow-supervisor" } },
-+              ]
-+            : [{ info: { role: "assistant", agent: "oracle" } }],
-+        }),
-+      },
-+    },
-+  })
-+  const beforeCommand = requireHook(hooks["command.execute.before"], "command.execute.before")
-+  const beforeTool = requireHook(hooks["tool.execute.before"], "tool.execute.before")
-+  const chatParams = requireHook(hooks["chat.params"], "chat.params")
-+
-+  await beforeCommand({ command: "verl-subagent-union-workflow", sessionID: "workflow-root" })
-+  await chatParams({ sessionID: "phase-child", agent: "workflow-supervisor" })
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "ordinary-session" },
-+      { args: { task_id: "workflow-root" } },
-+    ),
-+  )
-+  await expectBlocked(() =>
-+    beforeTool(
-+      { tool: "task", sessionID: "ordinary-session" },
-+      { args: { task_id: "phase-child" } },
-+    ),
-+  )
-+  await beforeTool(
-+    { tool: "task", sessionID: "ordinary-session" },
-+    { args: { task_id: "oracle-child" } },
-+  )
-+})
