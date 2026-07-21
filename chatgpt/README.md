@@ -25,7 +25,7 @@ Start a new Codex thread in a project that contains the five files under `.codex
 $verl-subagent-union-workflow
 ```
 
-See [docs/workflow.md](docs/workflow.md) and [docs/verl-rollout8-pre-run-confirmation.html](docs/verl-rollout8-pre-run-confirmation.html).
+See [docs/workflow.md](docs/workflow.md).
 
 For installation in a new environment or step-by-step diagnosis of an old environment, follow [docs/codex-workflow-bootstrap-and-recovery.md](docs/codex-workflow-bootstrap-and-recovery.md) and run:
 

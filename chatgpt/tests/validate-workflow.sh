@@ -35,8 +35,6 @@ for name in sys.argv[1:]:
     source = pathlib.Path(name).read_text(encoding="utf-8")
     compile(source, name, "exec")
 PY
-test -s "$ROOT/docs/verl-rollout8-pre-run-confirmation.html"
-
 bash "$ROOT/tests/test-runtime-contracts.sh"
 
 (cd "$ROOT/versions/v1" && sha256sum -c SHA256SUMS)
