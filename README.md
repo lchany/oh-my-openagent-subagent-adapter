@@ -1,32 +1,10 @@
-# Local Codex VERL multi-agent workflow
+# Agent workflow architectures
 
-This repository archives the Codex workflow that is used locally for VERL Baseline-versus-Optimized training on Ascend NPUs. The workflow definition is rebuilt from the active local Codex process and current user rules; legacy OpenCode workflow assets are not part of this version.
+This repository keeps the two agent runtimes physically separate:
 
-## Runtime roles
+- [`chatgpt/`](chatgpt/README.md): the local Codex/ChatGPT multi-agent workflow, Codex agents, plugin, tests, and versioned patches.
+- [`opencode/`](opencode/README.md): the OpenCode agent workflow, OpenCode adapter patches, agents, skills, and documentation.
 
-- Main thread: controller, complete intake owner, and the only user-facing role.
-- `baseline_runner`: prepares, repairs, runs, and closes Baseline.
-- `optimized_runner`: applies only the approved optimization, then runs and closes Optimized.
-- `workflow_supervisor`: read-only terminal review after each Runner.
-- `benchmark_comparator`: computes step-time, throughput, and reward deltas without judging reward reasonableness.
-- `experiment_reporter`: writes the final concise report.
+Run, install, validate, and version each architecture from its own directory. Files in one architecture must not import, discover, patch, package, or validate files from the other architecture.
 
-The two Runners execute sequentially on the same confirmed NPU allocation by default. They may make implementation decisions autonomously after intake, but may never ask the user or spawn another agent.
-
-## Install locally
-
-```bash
-codex plugin add verl-subagent-union-workflow@oh-my-openagent-local
-```
-
-Start a new Codex thread in a project that contains the five files under `.codex/agents/`, then invoke:
-
-```text
-$verl-subagent-union-workflow
-```
-
-See [docs/workflow.md](docs/workflow.md) and [docs/verl-rollout8-pre-run-confirmation.html](docs/verl-rollout8-pre-run-confirmation.html).
-
-## Versioning
-
-`versions/v1/` contains the version manifest and patch series. Generated run directories, raw logs, per-step result files, checkpoints, and local agent evidence are not project source and are not archived here.
+The repository root contains only shared repository policy and this architecture index. Runtime state is not a shared input between the two implementations.

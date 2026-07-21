@@ -1,0 +1,11 @@
+version: v1
+architecture: opencode
+root: opencode
+runtime: opencode
+cross_architecture_inputs: false
+workflow_package: verl-subagent-union-workflow
+patches:
+  - path: patches/0001-enable-opencode-agent-fallback-for-task.patch
+    sha256: 12bfebd63ca6b85adc2931b0c483d39a62b32bb15639ff6528a1e09e7c19c4dd
+  - path: patches/0002-verl-workflow-manual-only-activation.patch
+    sha256: 7ee7f7ebacb12bcfc949316f2764eb0964d723940b7e63c929e4b216fe9a298d

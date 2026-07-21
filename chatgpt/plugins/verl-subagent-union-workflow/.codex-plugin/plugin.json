@@ -1,6 +1,6 @@
 {
   "name": "verl-subagent-union-workflow",
-  "version": "1.0.0+codex.20260721080520",
+  "version": "1.0.0+codex.20260721081958",
   "description": "Local Codex controller for five-role VERL Baseline-versus-Optimized workflows on Ascend NPUs.",
   "author": {
     "name": "Local Workflow Maintainer"

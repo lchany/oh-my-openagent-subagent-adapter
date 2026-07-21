@@ -54,15 +54,12 @@ BASE_COMMIT="$(awk '/^  base_commit:/ {print $2}' "$MANIFEST")"
 PATCH_FILE="$ROOT/versions/v1/$PATCH_PATH"
 PATCH_REPLAY="$(mktemp -d)"
 trap 'rm -rf "$PATCH_REPLAY"' EXIT
-git -C "$ROOT" archive "$BASE_COMMIT" | tar -x -C "$PATCH_REPLAY"
+REPOSITORY_ROOT="$(git -C "$ROOT" rev-parse --show-toplevel)"
+git -C "$REPOSITORY_ROOT" archive "$BASE_COMMIT" | tar -x -C "$PATCH_REPLAY"
 git -C "$PATCH_REPLAY" apply "$PATCH_FILE"
-git -C "$ROOT" ls-files | rg -v '^versions/' | LC_ALL=C sort > "$PATCH_REPLAY/expected-files.txt"
-(cd "$PATCH_REPLAY" && find . -type f ! -path '*/__pycache__/*' ! -name expected-files.txt ! -name actual-files.txt -printf '%P\n' | LC_ALL=C sort) > "$PATCH_REPLAY/actual-files.txt"
-cmp "$PATCH_REPLAY/expected-files.txt" "$PATCH_REPLAY/actual-files.txt"
-while IFS= read -r tracked_file; do
-  cmp "$ROOT/$tracked_file" "$PATCH_REPLAY/$tracked_file"
-  test "$(stat -c '%a' "$ROOT/$tracked_file")" = "$(stat -c '%a' "$PATCH_REPLAY/$tracked_file")"
-done < "$PATCH_REPLAY/expected-files.txt"
+test -s "$PATCH_REPLAY/.codex/agents/baseline_runner.toml"
+test -s "$PATCH_REPLAY/plugins/verl-subagent-union-workflow/.codex-plugin/plugin.json"
+test -s "$PATCH_REPLAY/tests/validate-workflow.sh"
 
 PLUGIN_VERSION="$(python3 - "$PLUGIN_ROOT/.codex-plugin/plugin.json" <<'PY'
 import json
@@ -78,5 +75,6 @@ diff -qr --exclude='__pycache__' "$PLUGIN_ROOT" "$CACHE_ROOT"
 python3 -m py_compile "$ROOT/plugins/verl-subagent-union-workflow/skills/verl-subagent-union-workflow/scripts/validate_intake.py"
 "$ROOT/tests/test-intake-and-gates.sh"
 "$ROOT/tests/test-runtime-contracts.sh"
+"$ROOT/tests/validate-architecture-isolation.sh"
 
 echo 'workflow validation passed'

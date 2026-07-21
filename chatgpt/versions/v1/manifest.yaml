@@ -1,5 +1,7 @@
 version: v1
 workflow: local-codex-verl-multiagent
+architecture_root: chatgpt
+cross_architecture_inputs: false
 authority:
   - active-local-codex-session
   - /home/l30002999/AGENTS.md

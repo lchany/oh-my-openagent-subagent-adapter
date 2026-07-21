@@ -1,0 +1,105 @@
+diff --git a/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.ts b/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.ts
+index 9512bb565..68290a74a 100644
+--- a/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.ts
++++ b/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.ts
+@@ -1,4 +1,9 @@
+-import { loadProjectAgents, loadUserAgents } from "../../features/claude-code-agent-loader"
++import {
++  loadOpencodeGlobalAgents,
++  loadOpencodeProjectAgents,
++  loadProjectAgents,
++  loadUserAgents,
++} from "../../features/claude-code-agent-loader"
+ import {
+   getAgentConfigKey,
+   getAgentDisplayName,
+@@ -24,6 +29,8 @@ export function mergeWithClaudeCodeAgents(
+ ): AgentInfo[] {
+   const userAgentsRecord = loadUserAgents()
+   const projectAgentsRecord = loadProjectAgents(directory)
++  const opencodeProjectAgentsRecord = loadOpencodeProjectAgents(directory)
++  const opencodeGlobalAgentsRecord = loadOpencodeGlobalAgents()
+
+   const toAgentInfoList = (record: Record<string, { mode?: string; hidden?: boolean; model?: AgentInfo["model"] }>): AgentInfo[] =>
+     Object.entries(record).map(([name, config]) => ({
+@@ -43,7 +50,9 @@ export function mergeWithClaudeCodeAgents(
+
+   for (const agent of serverAgents) addIfAbsent(agent)
+   for (const agent of toAgentInfoList(projectAgentsRecord)) addIfAbsent(agent)
++  for (const agent of toAgentInfoList(opencodeProjectAgentsRecord)) addIfAbsent(agent)
+   for (const agent of toAgentInfoList(userAgentsRecord)) addIfAbsent(agent)
++  for (const agent of toAgentInfoList(opencodeGlobalAgentsRecord)) addIfAbsent(agent)
+
+   return Array.from(mergedAgentMap.values())
+ }
+diff --git a/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.test.ts b/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.test.ts
+new file mode 100644
+index 000000000..b64640e6a
+--- /dev/null
++++ b/packages/omo-opencode/src/tools/delegate-task/subagent-discovery.test.ts
+@@ -0,0 +1,65 @@
++/// <reference types="bun-types" />
++
++import { beforeEach, describe, expect, mock, test } from "bun:test"
++
++type AgentRecord = Record<
++  string,
++  {
++    readonly mode?: string
++    readonly hidden?: boolean
++    readonly model?: string | { readonly providerID: string; readonly modelID: string }
++  }
++>
++
++const loadUserAgentsMock = mock((): AgentRecord => ({}))
++const loadProjectAgentsMock = mock((_directory?: string): AgentRecord => ({}))
++const loadOpencodeProjectAgentsMock = mock((_directory?: string): AgentRecord => ({}))
++const loadOpencodeGlobalAgentsMock = mock((): AgentRecord => ({}))
++
++async function importFreshSubagentDiscoveryModule(): Promise<typeof import("./subagent-discovery")> {
++  return await import(`./subagent-discovery?test=${Date.now()}-${Math.random()}`)
++}
++
++describe("mergeWithClaudeCodeAgents", () => {
++  beforeEach(() => {
++    mock.restore()
++    loadUserAgentsMock.mockReset()
++    loadProjectAgentsMock.mockReset()
++    loadOpencodeProjectAgentsMock.mockReset()
++    loadOpencodeGlobalAgentsMock.mockReset()
++    loadUserAgentsMock.mockImplementation(() => ({}))
++    loadProjectAgentsMock.mockImplementation(() => ({}))
++    loadOpencodeProjectAgentsMock.mockImplementation(() => ({}))
++    loadOpencodeGlobalAgentsMock.mockImplementation(() => ({}))
++    mock.module("../../features/claude-code-agent-loader", () => ({
++      loadUserAgents: loadUserAgentsMock,
++      loadProjectAgents: loadProjectAgentsMock,
++      loadOpencodeProjectAgents: loadOpencodeProjectAgentsMock,
++      loadOpencodeGlobalAgents: loadOpencodeGlobalAgentsMock,
++    }))
++  })
++
++  test("includes OpenCode project and global agents when direct subagent resolution merges fallback agents", async () => {
++    //#given
++    loadOpencodeProjectAgentsMock.mockImplementation(() => ({
++      "my-opencode-project-agent": {
++        mode: "subagent",
++        model: "openai/gpt-5.4",
++      },
++    }))
++    loadOpencodeGlobalAgentsMock.mockImplementation(() => ({
++      "my-opencode-global-agent": {
++        mode: "subagent",
++        model: "openai/gpt-5.4",
++      },
++    }))
++    const { findCallableAgentMatch, mergeWithClaudeCodeAgents } = await importFreshSubagentDiscoveryModule()
++
++    //#when
++    const mergedAgents = mergeWithClaudeCodeAgents([], "/workspace")
++
++    //#then
++    expect(findCallableAgentMatch(mergedAgents, "my-opencode-project-agent")?.name).toBe("my-opencode-project-agent")
++    expect(findCallableAgentMatch(mergedAgents, "my-opencode-global-agent")?.name).toBe("my-opencode-global-agent")
++  })
++})
