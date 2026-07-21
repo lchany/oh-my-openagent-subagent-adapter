@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VERL Rollout8 运行前必确认项</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5f6b7a;
+      --line: #d9e0ea;
+      --panel: #ffffff;
+      --soft: #f5f7fb;
+      --accent: #155eef;
+      --accent-soft: #eaf1ff;
+      --warn: #9a6700;
+      --warn-soft: #fff7db;
+      --danger: #b42318;
+      --danger-soft: #fff0ee;
+      --success: #137a4b;
+      --success-soft: #eaf8f1;
+      --shadow: 0 12px 36px rgba(24, 39, 75, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(21, 94, 239, 0.10), transparent 28rem),
+        var(--soft);
+      font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 32px auto 72px;
+    }
+
+    header,
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    header {
+      padding: 34px;
+      margin-bottom: 20px;
+    }
+
+    section {
+      padding: 28px;
+      margin-top: 20px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.3;
+      margin-top: 0;
+    }
+
+    h1 {
+      margin-bottom: 10px;
+      font-size: clamp(28px, 4vw, 42px);
+      letter-spacing: -0.03em;
+    }
+
+    h2 {
+      margin-bottom: 18px;
+      font-size: 23px;
+    }
+
+    h3 {
+      margin: 22px 0 10px;
+      font-size: 17px;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      padding: 2px 6px;
+      color: #173b7a;
+      background: var(--accent-soft);
+      border-radius: 5px;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 20px;
+      overflow: auto;
+      color: #e7edf7;
+      background: #111827;
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef3fa;
+      font-weight: 650;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #fafbfd;
+    }
+
+    .eyebrow {
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 750;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .subtitle {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .pill {
+      padding: 6px 10px;
+      color: #28405f;
+      background: #edf2f8;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .callout {
+      margin: 14px 0;
+      padding: 14px 16px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      border-radius: 8px;
+    }
+
+    .callout.warning {
+      border-left-color: var(--warn);
+      background: var(--warn-soft);
+    }
+
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .callout.success {
+      border-left-color: var(--success);
+      background: var(--success-soft);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fbfcfe;
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .checklist {
+      list-style: none;
+      padding: 0;
+      margin: 10px 0 0;
+    }
+
+    .checklist li {
+      position: relative;
+      padding: 8px 8px 8px 32px;
+      border-bottom: 1px dashed #dfe5ee;
+    }
+
+    .checklist li:last-child {
+      border-bottom: 0;
+    }
+
+    .checklist li::before {
+      position: absolute;
+      top: 11px;
+      left: 4px;
+      width: 16px;
+      height: 16px;
+      content: "";
+      border: 2px solid #8795a8;
+      border-radius: 4px;
+      background: #fff;
+    }
+
+    .required {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status {
+      display: inline-block;
+      min-width: 64px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 750;
+      text-align: center;
+    }
+
+    .status.confirmed {
+      color: var(--success);
+      background: var(--success-soft);
+    }
+
+    .status.pending {
+      color: var(--warn);
+      background: var(--warn-soft);
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .flow span {
+      padding: 8px 10px;
+      background: #eef3fa;
+      border-radius: 8px;
+      font-weight: 650;
+    }
+
+    .flow b {
+      color: var(--accent);
+    }
+
+    footer {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 780px) {
+      main {
+        width: min(100% - 18px, 1180px);
+        margin-top: 10px;
+      }
+
+      header,
+      section {
+        padding: 20px;
+        border-radius: 12px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+        font-size: 11px;
+      }
+
+      main {
+        width: 100%;
+        margin: 0;
+      }
+
+      header,
+      section {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+
+      pre {
+        color: #111;
+        background: #f4f4f4;
+        border: 1px solid #ccc;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">VERL Subagent Union Workflow</div>
+      <h1>Rollout8 运行前必确认项</h1>
+      <p class="subtitle">
+        本文档用于 Baseline 与 Optimized 单机或多机训练的强制入参确认。
+        在完整确认前，不得创建运行工作区、修改容器、写工作单、启动 Ray 或训练。
+      </p>
+      <div class="meta">
+        <span class="pill">适用：单机 / 多机</span>
+        <span class="pill">模式：Baseline vs Optimized</span>
+        <span class="pill">确认协议：VERL_WORKFLOW_INTAKE_V1</span>
+        <span class="pill">确认令牌：CONFIRM_COMPLETE_INTAKE</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>一、不可跳过的确认规则</h2>
+      <div class="callout danger">
+        <strong>硬门禁：</strong>所有字段必须在同一份完整清单中给出具体值，并由用户精确回复
+        <code>CONFIRM_COMPLETE_INTAKE</code>。普通“确认”、部分字段确认或从历史记录推断，均不生效。
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>新运行原则</h3>
+          <ul class="checklist">
+            <li>每次运行必须有新的 <code>run_id</code>。</li>
+            <li>每次运行必须使用新的绝对 <code>workflow_workspace</code>。</li>
+            <li>不得静默复用旧 run、旧输出目录或旧 Ray session。</li>
+            <li>已确认工作单不可改写；输入变化必须创建新 run。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>交互边界</h3>
+          <ul class="checklist">
+            <li>所有必要确认只由主 Agent 与用户完成。</li>
+            <li>子 Agent 禁止向用户提问，也禁止创建子 Agent。</li>
+            <li>确认完成后，容器、Ray、重试和修复由工作流自主决策。</li>
+            <li>任何超出授权范围的操作必须停止并返回主 Agent。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>二、强制确认清单</h2>
+
+      <h3>1. 运行身份与工作区</h3>
+      <ul class="checklist">
+        <li><span class="required">必填</span>：<code>run_id</code>。</li>
+        <li><span class="required">必填</span>：全新的绝对 <code>workflow_workspace</code>。</li>
+        <li>Baseline、Optimized、Controller、Scripts 四个工作区绝对路径。</li>
+        <li>门禁脚本和容器创建脚本的绝对目标路径。</li>
+        <li>确认目标目录不存在，避免覆盖未知文件。</li>
+      </ul>
+
+      <h3>2. 容器、源码与镜像</h3>
+      <ul class="checklist">
+        <li>Baseline 和 Optimized 的容器名、节点映射及运行状态。</li>
+        <li>每个容器的源码根，例如 <code>/vllm-workspace/verl</code>。</li>
+        <li>镜像 ID、镜像归档路径和 Ascend runtime 方案。</li>
+        <li>是否授权创建、替换或重启缺失/不兼容的角色容器。</li>
+        <li>必须挂载并验证 <code>/mnt/disk2t</code> 与 <code>/mnt/sfs_turbo</code>。</li>
+        <li>Optimized 源码必须有 Git/patch 基准、关键哈希和实际运行导入证据。</li>
+        <li>Baseline 与 Optimized 必须使用独立容器和独立源码环境，避免共享源码污染。</li>
+      </ul>
+
+      <h3>3. 拓扑、节点和 NPU</h3>
+      <ul class="checklist">
+        <li>目标拓扑：单机、多机或其他明确拓扑。</li>
+        <li>节点数量、每个节点的角色和用户确认的私网地址。</li>
+        <li>每个节点的物理 NPU 编号，不能仅写“8卡”。</li>
+        <li>Baseline 与 Optimized 是顺序复用还是并行使用资源。</li>
+        <li>禁止操作的卡组、容器和进程边界。</li>
+        <li>Ray Head/Worker、端口、临时目录和 session 的隔离策略。</li>
+        <li>训练前必须证明目标卡空闲；清理前必须证明进程属于本 run。</li>
+      </ul>
+
+      <h3>4. 模型和数据集</h3>
+      <ul class="checklist">
+        <li>模型绝对路径。</li>
+        <li>训练数据集绝对路径。</li>
+        <li>验证数据集绝对路径，或明确填写 <code>none</code>。</li>
+        <li>容器内必须能访问上述路径。</li>
+        <li>不得从历史 run 推断或替换模型、数据集。</li>
+      </ul>
+
+      <h3>5. 完整训练参数</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>类别</th>
+            <th>必须确认的字段</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>训练规模</td>
+            <td><code>training_steps</code>、epochs、从 step 1 启动、resume 策略</td>
+          </tr>
+          <tr>
+            <td>数据批量</td>
+            <td>train batch、validation batch、shuffle、filter、truncation</td>
+          </tr>
+          <tr>
+            <td>PPO 批量</td>
+            <td>ppo mini batch、ppo micro batch per GPU、dynamic batch 开关</td>
+          </tr>
+          <tr>
+            <td>Rollout</td>
+            <td><code>rollout.n</code>、rollout/ref logprob micro batch、backend、async 模式</td>
+          </tr>
+          <tr>
+            <td>序列限制</td>
+            <td>max prompt、max response、max model length、max batched tokens、max num seqs</td>
+          </tr>
+          <tr>
+            <td>并行与显存</td>
+            <td>TP、FSDP size、NPU per node、gpu memory utilization、offload/recompute</td>
+          </tr>
+          <tr>
+            <td>确定性</td>
+            <td>seed、模型路径、数据集路径、reward 函数</td>
+          </tr>
+          <tr>
+            <td>保存与恢复</td>
+            <td><code>resume=disable</code>、<code>save_freq=-1</code>、checkpoint 和 optimizer 恢复策略</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>6. 指标与精度报告</h3>
+      <ul class="checklist">
+        <li>性能指标名称：单步耗时、训练吞吐或其他指标。</li>
+        <li>每个指标的单位。</li>
+        <li>明确聚合窗口，例如 steps 6–15。</li>
+        <li>Reward 指标名称及比较方向。</li>
+        <li>精度策略：仅报告，或用户明确指定的判定策略。</li>
+        <li>若为 <code>report_only</code>，只报告原值、绝对偏差和相对偏差，不替用户判断合理性。</li>
+      </ul>
+
+      <h3>7. 优化目标和允许差异</h3>
+      <ul class="checklist">
+        <li>明确本轮唯一优化目标，例如 Rollout8 Native-N v2。</li>
+        <li>列出所有允许的 Baseline/Optimized 差异。</li>
+        <li>除容器身份、输出路径和批准的优化字段外，训练字段必须一致。</li>
+        <li>源码兼容修复若影响公共路径，必须说明是否两侧一致应用。</li>
+        <li>比较前必须完成字段级审计和源码/运行时激活审计。</li>
+      </ul>
+
+      <h3>8. Launcher 与执行方式</h3>
+      <ul class="checklist">
+        <li>提供确切 launcher，或授权 Baseline Runner 生成最小确定性 launcher。</li>
+        <li>训练只能通过工作区门禁脚本启动。</li>
+        <li>Optimized 必须继承 Baseline canonical launcher/config。</li>
+        <li>不得继承旧 run 的 step、指标、checkpoint、optimizer、Ray session 或输出目录。</li>
+      </ul>
+
+      <h3>9. 重试与授权范围</h3>
+      <ul class="checklist">
+        <li>正整数 <code>max_attempts</code>。</li>
+        <li>容器创建/重启、局部清理、源码修复、网络和 Ray 操作的授权范围。</li>
+        <li>禁止操作的容器、节点、NPU 或外部任务。</li>
+        <li>Git 网络同步是否授权；未授权时只能使用本地 Git/patch。</li>
+        <li>所有修复必须写入 <code>issues.yaml</code>，并由真实门禁重跑验证。</li>
+      </ul>
+
+      <h3>10. 逐 step 结果与归档策略</h3>
+      <div class="callout warning">
+        默认禁止创建逐 step checkpoint、snapshot、额外 result 文件或逐 step 归档。
+        不得把逐 step 数值写入 Project Memory、Experience Vault 或项目归档。
+      </div>
+      <ul class="checklist">
+        <li>允许保留训练框架原生日志。</li>
+        <li>只生成最终聚合窗口结果和必要终态证据。</li>
+        <li>只有用户对当前任务明确要求时，才允许额外保存逐 step 结果。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>三、当前 Rollout8 单机 v2 已确认值</h2>
+      <div class="callout success">
+        以下内容来自当前不可变工作单，可作为填写示例；它不是其他项目或其他 run 的默认值。
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>项目</th>
+            <th>当前确认值</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Run ID</td>
+            <td><code>rollout8-singlenode-20260721-v2</code></td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>工作区</td>
+            <td><code>/mnt/disk2t/l30002999/rollout8_singlenode_compare_20260721_v2</code></td>
+            <td><span class="status confirmed">已创建</span></td>
+          </tr>
+          <tr>
+            <td>Baseline 容器</td>
+            <td><code>verl_l30002999_much_rollout8_baseline_v1</code></td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>Optimized 容器</td>
+            <td><code>verl_l30002999_much_rollout8_optimized_v1_single_v2</code></td>
+            <td><span class="status pending">待创建</span></td>
+          </tr>
+          <tr>
+            <td>拓扑</td>
+            <td>单机，物理 NPU 8–15，Baseline 与 Optimized 顺序独占</td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>禁止范围</td>
+            <td>物理 NPU 0–7及其程序、Ray、容器；原 Optimized v1 容器</td>
+            <td><span class="status confirmed">硬约束</span></td>
+          </tr>
+          <tr>
+            <td>模型</td>
+            <td><code>/mnt/sfs_turbo/models/Qwen3-VL-2B-Instruct</code></td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>训练数据</td>
+            <td><code>/mnt/disk2t/l30002999/dataset/kitti_28f_7x4_verl_bytes/train.parquet</code></td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>验证数据</td>
+            <td><code>/mnt/disk2t/l30002999/dataset/kitti_28f_7x4_verl_bytes/test.parquet</code></td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>核心参数</td>
+            <td>15 steps、train batch 128、PPO mini 256、rollout.n=8、TP=1、seed=1</td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>统计窗口</td>
+            <td>fresh steps 6–15；step time、throughput、reward mean</td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>Reward 策略</td>
+            <td><code>report_only</code>，不设置门限，不判断合理性</td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>保存与恢复</td>
+            <td><code>resume=disable</code>、<code>save_freq=-1</code>、无逐 step 归档</td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>最大尝试次数</td>
+            <td>20</td>
+            <td><span class="status confirmed">已确认</span></td>
+          </tr>
+          <tr>
+            <td>当前执行状态</td>
+            <td>暂停；训练尚未启动；后8卡空闲</td>
+            <td><span class="status pending">已暂停</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>四、标准阶段顺序</h2>
+      <div class="flow" aria-label="标准阶段顺序">
+        <span>Baseline Runner</span><b>→</b>
+        <span>Supervisor</span><b>→</b>
+        <span>Optimized Runner</span><b>→</b>
+        <span>Supervisor</span><b>→</b>
+        <span>Comparator</span><b>→</b>
+        <span>Supervisor</span><b>→</b>
+        <span>Reporter</span>
+      </div>
+      <div class="callout">
+        每个 Runner 独立负责准备、门禁、启动、监控、最小修复和重试；Supervisor 只读审查终态证据。
+        前一阶段未完成清理证明时，后一阶段不得使用同一组 NPU。
+      </div>
+    </section>
+
+    <section>
+      <h2>五、可复制的完整确认模板</h2>
+      <p class="small">所有省略号必须替换为具体值。只有允许为空的字段才能填写 <code>none</code>。</p>
+      <pre>VERL_WORKFLOW_INTAKE_V1
+run_id: ...
+workflow_workspace: ...
+baseline_workspace: ...
+optimized_workspace: ...
+controller_workspace: ...
+scripts_workspace: ...
+gate_wrapper_path: ...
+container_creation_script_path: ...
+baseline_containers: ...
+optimized_containers: ...
+baseline_source_roots: ...
+optimized_source_roots: ...
+image_runtime_plan: ...
+container_creation_plan: ...
+topology_target: ...
+node_count: ...
+npu_allocation: ...
+private_addresses: ...
+model_path: ...
+train_dataset_path: ...
+eval_dataset_path: ...
+training_steps: ...
+batch_sizes: ...
+rollout_count: ...
+tensor_parallel_size: ...
+seed: ...
+performance_metrics: ...
+metric_units: ...
+aggregation_window: ...
+reward_metric: ...
+reward_comparison_policy: ...
+optimization_objective: ...
+allowed_differences: ...
+launcher_decision: ...
+resume_policy: ...
+step_result_policy: ...
+max_attempts: ...
+authorized_actions: ...
+VERL_WORKFLOW_INTAKE_END</pre>
+      <div class="callout success">
+        最终只接受两个精确选择：
+        <code>CONFIRM_COMPLETE_INTAKE</code> 或 <code>REVISE_INTAKE</code>。
+      </div>
+    </section>
+
+    <section>
+      <h2>六、启动前最终 Go / No-Go</h2>
+      <ul class="checklist">
+        <li>完整 intake 已获得精确确认令牌。</li>
+        <li>工作单、门禁脚本和容器创建脚本哈希已验证。</li>
+        <li>容器身份、镜像、源码根及两个共享挂载已验证。</li>
+        <li>目标 NPU 空闲，禁止卡组和外部任务未被触碰。</li>
+        <li>Baseline/Optimized 字段差异仅包含批准项。</li>
+        <li>没有继承历史 step、checkpoint、optimizer、Ray session 或输出目录。</li>
+        <li>逐 step 结果不落盘、不归档；最终聚合策略明确。</li>
+        <li>清理范围、重试次数和失败升级策略明确。</li>
+      </ul>
+      <div class="callout danger">
+        以上任一项缺失、矛盾或证据失效时，结论必须是 <strong>No-Go</strong>，不得启动训练。
+      </div>
+    </section>
+
+    <footer>
+      本文档为项目内运行门禁说明，不作为其他项目的默认配置或跨项目经验来源。
+    </footer>
+  </main>
+</body>
+</html>

@@ -1,7 +1,7 @@
 {
   "name": "oh-my-openagent-local",
   "interface": {
-    "displayName": "oh-my-openagent local"
+    "displayName": "Local Codex Workflows"
   },
   "plugins": [
     {

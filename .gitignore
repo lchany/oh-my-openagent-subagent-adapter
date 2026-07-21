@@ -1,1 +1,4 @@
+.omo/
+.debug-journal.md
 PROJECT_MEMORY.md
+__pycache__/

@@ -1,0 +1,30 @@
+version: v1
+workflow: local-codex-verl-multiagent
+authority:
+  - active-local-codex-session
+  - /home/l30002999/AGENTS.md
+  - /home/l30002999/PROJECT_MEMORY.md
+legacy_repository_content_used_as_design_source: false
+roles:
+  controller: main-thread
+  phase_agents:
+    - baseline_runner
+    - optimized_runner
+    - workflow_supervisor
+    - benchmark_comparator
+    - experiment_reporter
+runtime_scripts:
+  source: /mnt/disk2t/l30002999/rollout8_dualnode_compare_20260720_v4/scripts (local runtime provenance; wrapper includes Codex exact-NPU hardening)
+  create_role_container_sha256: 14f495b3adf7480f9ef43fd56c4c37d0f244bdce3c07c1abb43597a0b7cfc66c
+  run_training_with_gates_sha256: aff373a34348fa6ab4a781fb575dd2f477cb13884d43c995ba6cae1c12d9fcfc
+  validate_intake_sha256: 29c417ea8606c94adaa9869e4e617aa80b52c3708a8b4f5f101902337f28334e
+  validate_npu_binding_sha256: a6ec81c2e034f4262fcec0ecdee878e9a437da1f9af365643e9394a9866ebe17
+  verify_terminal_cleanup_sha256: 44d02b268323e864b2d0620cf59f35b393cd32410b9a7416de389cc025d3edbd
+patch:
+  base_commit: a17ea5a
+  path: patches/0001-local-codex-verl-multiagent-workflow.patch
+  sha256: 987de72336f27eba07c10836b4096ec86c1ea07195046b7d65437d15d9d64b6d
+defaults_requiring_complete_intake_confirmation:
+  max_attempts: 20
+  resume_policy: fresh_start
+  step_result_policy: final_only

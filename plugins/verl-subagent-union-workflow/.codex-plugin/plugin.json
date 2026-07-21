@@ -1,11 +1,10 @@
 {
   "name": "verl-subagent-union-workflow",
-  "version": "0.1.0+codex.20260703081530",
-  "description": "Explicitly triggered Codex controller for VERL and Ascend/NPU multi-agent optimization workflows.",
+  "version": "1.0.0+codex.20260721080520",
+  "description": "Local Codex controller for five-role VERL Baseline-versus-Optimized workflows on Ascend NPUs.",
   "author": {
-    "name": "lchany"
+    "name": "Local Workflow Maintainer"
   },
-  "repository": "https://github.com/lchany/oh-my-openagent-subagent-adapter",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -16,19 +15,17 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "VERL Subagent Union Workflow",
-    "shortDescription": "Explicit Codex controller for VERL/NPU optimization phases.",
-    "longDescription": "A Codex plugin that starts a controller-only workflow for VERL and Ascend/NPU optimization runs. It uses repo-scoped Codex custom agents and only triggers when explicitly invoked.",
-    "developerName": "lchany",
+    "displayName": "VERL Multi-Agent Workflow",
+    "shortDescription": "Controller plus five local VERL phase roles.",
+    "longDescription": "Interactive intake, autonomous Baseline and Optimized execution, terminal supervision, comparison, and final reporting.",
+    "developerName": "Local",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
       "Subagents"
     ],
     "defaultPrompt": [
-      "Start VERL workflow controller",
-      "Resume VERL workflow controller",
-      "Explain VERL workflow state"
+      "Start the local VERL Baseline-versus-Optimized workflow"
     ],
     "brandColor": "#2563EB"
   }

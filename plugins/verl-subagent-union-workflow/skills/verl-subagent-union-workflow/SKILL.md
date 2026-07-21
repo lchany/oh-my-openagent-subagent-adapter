@@ -1,256 +1,120 @@
 ---
 name: verl-subagent-union-workflow
-description: Explicit-only Codex plugin workflow controller for VERL + Ascend/NPU multi-subagent optimization. Use only when the user explicitly invokes this plugin or this skill with @ or $, not for ordinary VERL/NPU requests.
+description: Run the local Codex five-role VERL Baseline-versus-Optimized workflow on Ascend NPUs. Use only when the user explicitly invokes this skill or explicitly asks to run this workflow.
 ---
 
-# VERL Subagent Union Workflow For Codex
+# Local Codex VERL multi-agent workflow
 
-This skill is the explicit controller entrypoint for the Codex plugin `verl-subagent-union-workflow`.
+Operate as the main-thread controller. Use Codex native custom agents from `.codex/agents/`. Do not perform Baseline, Optimized, supervision, comparison, or reporting work in the main thread.
 
-Do not implicitly activate this workflow. It is intended to run only when the user explicitly invokes the plugin or skill from Codex.
+## Roles
 
-## Controller Boundary
+Use exactly these durable phase roles:
 
-The current assistant is the main workflow controller. It coordinates specialized Codex subagents, persists phase artifacts, and enforces supervisor gates. It must not perform phase-worker duties itself.
+1. `baseline_runner`
+2. `workflow_supervisor`
+3. `optimized_runner`
+4. `workflow_supervisor`
+5. `benchmark_comparator`
+6. `experiment_reporter`
 
-If the controller is about to inspect bulky logs, validate an environment, run training, edit optimization code, compare metrics, debug a failure, or write a final experiment report, it must spawn the matching workflow agent instead.
+Use the Supervisor only after a Runner has returned its terminal result. Do not insert a Supervisor review between Runner retry attempts. Each Runner owns preparation, launch, monitoring, diagnosis, minimum repair, verification, retry, and task-owned cleanup in one long-lived agent thread.
 
-Allowed controller work:
+Only the main controller interacts with the user. Every subagent is non-interactive, returns blockers to the controller, and must not create another agent.
 
-- intake and missing-input questions
-- project/workspace discovery and confirmation
-- phase-state, work-order, delegation, session, change-ledger, and supervisor-verdict bookkeeping
-- spawning the matching Codex custom agent
-- waiting for and summarizing bounded subagent results
-- blocking a phase when routing or required evidence is invalid
+## Complete intake gate
 
-## Codex Agent Dispatch
+Before creating or modifying a workspace, work order, container, Ray cluster, training script, source file, or process, present one consolidated checklist. Read-only discovery may suggest candidates, but neither history nor memory confirms a value for the user.
 
-Use Codex subagents, not OpenCode `task()` calls.
+The controller must serialize the checklist as intake JSON and run the bundled `scripts/validate_intake.py` before any mutation. The validator rejects missing/extra fields, placeholders, stale confirmations, an existing workspace, invalid private addresses, and non-canonical physical NPU lists. The gate wrapper must receive the exact node-local list through `--npu-devices`; it validates count, uniqueness, inherited visible-device variables, and launch-time `ASCEND_RT_VISIBLE_DEVICES`/`NPU_VISIBLE_DEVICES` binding. A multi-node `expected_npus` value is the total and is divided evenly across nodes.
 
-The workflow agents are repo-scoped Codex custom agents under `.codex/agents/*.toml`. Codex custom-agent names must use lowercase letters, digits, and underscores, so the Codex roles use underscores even though the original OpenCode files use hyphens. Before dispatch, verify the requested role is in the allowlist below. Spawn exactly the role required for the current phase, and treat any missing or wrong-role result as invalid evidence.
+Confirm all of the following together:
 
-Never substitute Codex built-in agents (`default`, `explorer`, or `worker`) for a workflow role. If the requested workflow role cannot be spawned as that exact custom agent, stop with `routing_blocker: phase_agent_required`.
+- run ID and a new absolute workflow workspace;
+- Baseline and Optimized container names, image/runtime plan, source roots, and whether missing containers may be created;
+- topology, node count, private address per node, and exact physical NPU allocation per node;
+- absolute model, train dataset, and optional eval dataset paths;
+- training steps, every batch-size field, rollout count, tensor parallel size, and seed;
+- performance metrics, units, aggregation window, reward metric, and reward comparison policy;
+- optimization objective and every permitted Baseline/Optimized difference;
+- exact launcher override or authority for the Baseline Runner to select or generate it;
+- `resume_policy`, `step_result_policy`, `max_attempts`, and authorized actions.
 
-When dispatching, tell the subagent:
+When the user does not explicitly choose another VERL image, use the local image archive `/mnt/disk2t/l30002999/images/verl-0.7.1_vllm-0.18.0_cann-8.5.1_baseline-installed.tar`; do not infer the image from an existing container name or tag. Every new Ascend/VERL role container mounts and verifies both `/mnt/disk2t` and `/mnt/sfs_turbo`.
 
-- the expected phase and role
-- the run id, topology, work-order path, and relevant artifact paths
-- the exact allowed and forbidden actions
-- the non-interactive permission envelope for the phase
-- to return bounded summaries and artifact paths, not raw logs or dense output
-- to preserve evidence under `runs/{run-id}/`
-
-Do not let phase agents directly hand off to each other. The controller receives each result, then spawns `workflow_supervisor` to audit it before advancing.
-
-## Subagent Permission Envelope
-
-Workflow subagents must run without mid-phase user confirmations. The controller must decide and record the allowed actions in the work-order before dispatch. If the allowed action envelope is missing, too narrow, or unsafe, block before spawning the subagent instead of spawning it and requiring a later user prompt.
-
-Required work-order fields for non-interactive execution:
-
-```yaml
-permissions:
-  non_interactive: true
-  ask_user_during_phase: false
-  allow_environment_checks: true
-  allow_runtime_switch: true
-  allow_training_launch: true
-  allow_debug_within_scope: true
-  allow_git_commit: true
-  allow_git_push: true
-  git_push_scope:
-    - "training_scripts"
-    - "ray_scripts"
-    - "approved_source_changes"
-```
-
-`allow_git_push: true` authorizes only `source_release_manager` to push the approved publish scope after successful variant runs. Other agents must not push. Destructive source history operations, broad cleanup, deleting datasets/models, deleting containers, and pushing generated run evidence remain forbidden unless the user explicitly expands the scope.
-
-## Active Agents
-
-Allowed workflow roles:
+Propose these local defaults, but require confirmation:
 
 ```text
-optimization_analyst
-workflow_supervisor
-context_curator
-verl_npu_env_builder
-source_release_manager
-baseline_runner
-optimization_implementer
-optimized_runner
-benchmark_comparator
-run_evidence_analyst
-workflow_generalist
-debug_isolator
-experiment_reporter
+resume_policy=fresh_start
+step_result_policy=final_only
+max_attempts=20
 ```
 
-Role routing:
+`final_only` means native training logs plus terminal/aggregate results only. It forbids extra per-step results, checkpoints, snapshots, Project Memory entries, Experience Vault entries, and project archives. Only an explicit current-run user override can enable per-step persistence.
 
-- `optimization_analyst`: optimization idea intake, solution analysis, risk review, and bounded code/file mapping.
-- `verl_npu_env_builder`: environment readiness, containers, CANN, torch_npu, model/data/script path checks, and environment checkpoints.
-- `source_release_manager`: GitHub branch, local worktree, commit, cleanliness, publication, and runtime switch contract gates for GitHub-backed worktree stacks.
-- `baseline_runner`: baseline readiness, launch gate, durable execution, log polling, and baseline checkpoint.
-- `optimization_implementer`: smallest approved core implementation patch after a successful baseline.
-- `optimized_runner`: optimized readiness, launch gate, durable execution, log polling, and optimized checkpoint.
-- `benchmark_comparator`: same-topology baseline/optimized comparison and verdict.
-- `run_evidence_analyst`: bulky log, profiler, metric, and training-output inspection in isolation.
-- `debug_isolator`: failed-phase root cause isolation and retry routing.
-- `context_curator`: context hygiene and recoverable handoff summaries.
-- `workflow_supervisor`: transition gate audit after every phase result.
-- `experiment_reporter`: final report and archive manifest from approved evidence.
-- `workflow_generalist`: small workflow-support tasks only when no specialist applies.
+`fresh_start` forbids inferred or restored launcher, step, checkpoint, optimizer, metric, Ray-session, and output state from previous runs. An explicit resume source must be confirmed as part of a new work order.
 
-## Phase Gates
+Project summaries, project memory, and project-specific archives are path-scoped. Do not import them from another project as workflow inputs. Only separately distilled, anonymized, verified cross-project knowledge may be reused.
 
-Default phase order:
+End the checklist with the exact token `CONFIRM_COMPLETE_INTAKE`. Do not treat generic confirmation, partial confirmation, an older run, or a previous work order as complete intake.
 
-```text
-optimization_analyst
--> workflow_supervisor
--> context_curator
--> verl_npu_env_builder      # baseline environment, scripts, and runtime switch
--> workflow_supervisor
--> baseline_runner
--> workflow_supervisor
--> source_release_manager    # publish baseline training/Ray script state
--> workflow_supervisor
--> verl_npu_env_builder      # optimized environment, scripts, and runtime switch
--> workflow_supervisor
--> optimized_runner
--> workflow_supervisor
--> source_release_manager    # publish optimized training/Ray script state
--> workflow_supervisor
--> benchmark_comparator
--> workflow_supervisor
--> experiment_reporter
-```
+Materialize the confirmed values as JSON matching `scripts/validate_intake.py`, and run that validator before the first mutation. A missing field, placeholder, stale confirmation, existing workspace, non-RFC1918 node address, or non-canonical physical-NPU list blocks execution.
 
-For multi-topology experiments, complete each topology pair before starting the next. Within each topology, complete baseline environment/switch/run/publish before optimized environment/switch/run/publish:
+If base data, model, workspace, topology, NPU allocation, or experiment semantics are still missing, the main controller asks the user. Subagents never ask.
 
-```text
-single-node baseline env+run+publish, optimized env+run+publish, comparison
--> dual-node baseline env+run+publish, optimized env+run+publish, comparison
--> four-node baseline env+run+publish, optimized env+run+publish, comparison
-```
+## Immutable work order
 
-The next topology is allowed only after the current topology has a successful baseline, successful optimized run, comparison checkpoint, and supervisor approval, unless the user explicitly records a skip.
+After complete confirmation, write one immutable work order under the confirmed controller workspace. It contains only confirmed execution inputs. A changed model, dataset, workspace, objective, topology, resource allocation, workload field, resume policy, persistence policy, or optimization allowlist requires a new run and new workspace.
 
-## Artifact Requirements
+After intake, the workflow independently decides implementation details inside the confirmed scope: container preparation, Ray and private-network setup, launcher/config realization, compatibility repair, retry, and task-owned cleanup do not require more user interaction.
 
-Before each phase dispatch, create or update a work-order under `runs/{run-id}/`.
+## Dispatch and resource isolation
 
-After each phase result, persist a bounded delegation result with:
+Dispatch phase agents from the main thread only. Subagents do not spawn, delegate, or interact with the user.
 
-- `delegation_id`
-- expected agent and actual agent
-- phase
-- terminal status
-- summary
-- primary artifact path
-- evidence paths
-- blocker, if any
-- proposed next action
+Baseline and Optimized execute sequentially on the same confirmed allocation by default. Parallel execution is allowed only when the user confirmed disjoint node/NPU allocations.
 
-Do not approve phase transitions from chat-only output. Require persisted artifact paths, especially for training, implementation, comparison, debug, and final reporting.
+For a confirmed physical NPU 8-15 run:
 
-## Routing Blockers
+- launch and cleanup are limited to physical NPU 8-15;
+- never stop, kill, clean, restart, or reuse a Ray/process/container state that belongs to physical NPU 0-7;
+- cleanup requires evidence that the target process belongs to the current run and assigned role container;
+- foreign or ambiguous occupancy produces a blocker instead of cleanup.
 
-Block and do not advance when any of these conditions occur:
+Every gate-wrapper invocation supplies `--npu-devices` with the exact node-local physical IDs. The wrapper binds that value to the immutable work order and Actor private IP, rejects conflicting inherited visible-device variables or training arguments, and exports both `ASCEND_RT_VISIBLE_DEVICES` and `NPU_VISIBLE_DEVICES` before launch. NPU count alone is never sufficient.
 
-- `phase_agent_required`: the controller is about to do phase-worker work or a required agent is unavailable.
-- `non_workflow_agent`: the selected role is outside the allowlist.
-- `main_agent_substitution`: the result does not prove a specialized workflow agent ran.
-- `archive_gate_required`: a verified root cause/fix lacks archive review.
-- `source_release_gate_required`: baseline or optimized source/publication checkpoint is missing, unapproved, dirty, branch-mismatched, unpublished when publication is required, or inconsistent with the runtime switch contract.
-- `preflight_gate_required`: runner preflight artifacts are missing or invalid.
-- `direct_training_launch`: training was launched outside the workspace gate wrapper.
-- `direct_runtime_switch`: source was copied into the runtime tree outside the approved worktree stack switch script.
-- `log_polling_required`: runner-side polling artifacts are missing.
-- `runner_preflight_failed`: baseline or optimized launch preflight failed, is missing, or is unknown.
-- `topology_order_violation`: a larger topology starts before the current pair is complete.
+The training script and configuration for single-node and multi-node comparisons keep the same workload fields. Only topology, node/Ray networking, role/output paths, confirmed resource mapping, and explicitly approved optimization differences may vary.
 
-For any routing blocker, discard the returned phase output as invalid evidence. Report the blocker and repair path; do not complete the phase yourself.
+## Phase order
 
-## GitHub-Backed Worktree Stack Mode
+For every requested topology:
 
-Use this mode when a VERL project stores orchestration on a management branch and stores baseline and optimized full source trees on separate GitHub branches backed by local git worktrees. A project enters this mode when the work-order provides `source_release` and `worktree_stack`, or when project discovery finds `stack.json`, `scripts/switch_stack.py`, and `scripts/trainctl.py`.
+1. Dispatch `baseline_runner` and wait for its terminal result.
+2. Dispatch `workflow_supervisor` for one read-only terminal review.
+3. Dispatch `optimized_runner` only after Baseline success and proven cleanup.
+4. Dispatch `workflow_supervisor` for one read-only terminal review.
+5. Dispatch `benchmark_comparator` only after both compatible terminal results exist.
+6. Dispatch `experiment_reporter` after the comparison is complete.
 
-This mode assumes the user has already chosen the optimization plan, identified the modules likely to change, and prepared baseline/optimized code under git worktree management. During normal execution the workflow does not invent the optimization plan or implement new optimization code. It validates environment readiness, switches the runtime to the requested variant, runs training, publishes validated training/Ray script state to GitHub when authorized, compares results, and reports.
+If the user pauses the task, stop or interrupt only current-workflow agents and processes whose ownership is proven. Then verify no owned training or Ray process remains. Do not touch unrelated work.
 
-In this mode GitHub is the publication and restore source of truth, local worktrees are the source trees, and the container runtime tree is only a synchronized runtime target. The workflow must prove consistency across all three layers before training:
+## Results
 
-- GitHub branches and local worktrees: verified and published by `source_release_manager` after successful variant runs.
-- Runtime target such as `/vllm-workspace/verl`: selected by `verl_npu_env_builder` only through the approved switch script.
-- Training launch: started only by the approved gate wrapper, normally `scripts/trainctl.py`.
+Each phase returns one concise terminal result with status, primary artifact/log path, blocker if any, and next action. Keep raw and dense output in native files. Do not create a separate artifact for every training step or retry.
 
-The controller must include these fields in the work-order before dispatching source, runner, implementation, or comparison phases:
+The comparator reports:
 
-```yaml
-source_release:
-  remote: "<git remote url>"
-  sync_policy: "verify_only|pull_allowed|push_allowed|full_sync_allowed"
-  publish_training_scripts_after_success: true
-  publish_scope:
-    - "training_scripts"
-    - "ray_scripts"
-    - "approved_source_changes"
-  management:
-    branch: "<management branch>"
-    worktree: "<management worktree>"
-  baseline:
-    branch: "<baseline branch>"
-    worktree: "<baseline source worktree>"
-    immutable: true
-  optimized:
-    branch: "<optimized branch>"
-    worktree: "<optimized source worktree>"
-    publish_required_before_run: true
-worktree_stack:
-  enabled: true
-  stack_root: "<path containing stack.json>"
-  inventory: "<inventory path>"
-  nodes: "1|2|4"
-  variants:
-    baseline: "baseline"
-    optimized: "optimized-v4"
-  runtime_target: "/vllm-workspace/verl"
-```
+- mean step time and delta;
+- throughput and delta;
+- reward value and delta;
+- workload comparability and evidence paths.
 
-Workflow agents must not collapse baseline and optimized behavior into one runtime source tree, must not use environment variables as the baseline/optimized switch, and must not manually copy arbitrary source files into the runtime target. If `trainctl.py` exists, runners must use it; direct invocation of variant `container_train_*.sh` is invalid unless the work-order explicitly names a different gate wrapper.
+Reward values and deltas are report-only. Do not decide whether reward behavior is reasonable; that judgment belongs to the user.
 
-`verl_npu_env_builder` must produce variant-specific environment/switch evidence before each runner phase. It must verify model path, dataset path, inventory, training/Ray scripts, container readiness, source worktree cleanliness, and runtime switch evidence for the requested variant. If a required training or Ray script is missing, it may create or repair only the management-worktree script under the approved stack path and must record that change.
+## Git and patch boundary
 
-`source_release_manager` must produce variant-specific publication artifacts after each successful runner phase. Use `runs/{run-id}/source/baseline/` for baseline and `runs/{run-id}/source/optimized/` for optimized. The checkpoint must record management, baseline, and optimized commits; branch names; worktree cleanliness; publication status allowed by `sync_policy`; baseline optimization-code absence; optimized-code presence; validated training/Ray script paths; and the exact runtime switch and train wrapper contract used for the completed run.
+When source optimization is part of the confirmed run, use local Git in the Optimized source tree and keep Baseline source unchanged. Archive approved source differences as reviewable patches. Do not import customer-specific code wholesale; preserve source-native behavior that is relevant and keep the approved optimization semantics equivalent.
 
-Only training scripts, Ray startup scripts, and explicitly approved source changes may be committed or pushed by the workflow. Intermediate workflow artifacts such as `runs/`, logs, metrics summaries, checkpoints, debug evidence, generated reports, local project memory, and dense command output stay local and must not be synchronized to GitHub by any subagent.
+Git operations for this workflow are local and offline. Do not fetch, pull, push, or perform equivalent code-sync network operations.
 
-## Verified RCA Archive Gate
-
-Any workflow subagent that identifies a root cause, applies or recommends a fix, and verifies the fix must complete Experience Vault archive review before the controller advances.
-
-Required fields in subagent output after verified RCA:
-
-```yaml
-archive_gate:
-  verified_root_cause: true
-  fix_verified: true
-  archive_review_done: true
-  archive_command: "<machine-appropriate Experience Vault milestone/review command, if Experience Vault is available>"
-  archive_decision: archived | draft_created | no_archive_needed
-  archive_artifacts: []
-```
-
-Do not archive a hypothesis as reusable experience. This gate starts only after the fix is verified.
-
-## Safety
-
-Keep raw logs, full tracebacks, credentials, private IPs, profiling dumps, full diffs, install logs, and large artifacts out of the main context. Use paths and concise summaries.
-
-When an Ascend/NPU container action is involved, follow the user's active Ascend/Docker rules, including required shared mounts when creating containers.
-
-## OpenCode Compatibility Note
-
-This Codex plugin replaces OpenCode `task(subagent_type=...)` dispatch with Codex custom-agent dispatch. The original OpenCode workflow remains in `verl-subagent-union-workflow/` for users who still run OpenCode.
+Local Git means inspection, commits, and patch generation only. Do not fetch, pull, push, or perform any equivalent network synchronization unless the user explicitly authorizes that operation in the current turn.

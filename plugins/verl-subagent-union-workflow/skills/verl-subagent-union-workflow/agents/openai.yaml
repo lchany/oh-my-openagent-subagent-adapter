@@ -1,7 +1,4 @@
 interface:
-  display_name: "VERL Subagent Union Workflow"
-  short_description: "Explicit controller for VERL/NPU optimization workflows."
-  default_prompt: "Start VERL workflow controller"
-
-policy:
-  allow_implicit_invocation: false
+  display_name: "VERL Multi-Agent Workflow"
+  short_description: "Run a confirmed VERL Baseline/Optimized comparison with five Codex roles."
+  default_prompt: "Start the local Codex VERL multi-agent workflow."

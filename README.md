@@ -1,53 +1,32 @@
-# oh-my-openagent subagent adapter
+# Local Codex VERL multi-agent workflow
 
-This repository packages a small patch for `oh-my-openagent` / `oh-my-opencode` that lets `task(subagent_type="...")` resolve custom OpenCode agents from `.opencode/agents` in the same fallback path that already resolves Claude-style agents.
+This repository archives the Codex workflow that is used locally for VERL Baseline-versus-Optimized training on Ascend NPUs. The workflow definition is rebuilt from the active local Codex process and current user rules; legacy OpenCode workflow assets are not part of this version.
 
-## What this solves
+## Runtime roles
 
-In the target codebase, the real OpenCode runtime can load custom agents from `.opencode/agents`, and `opencode agent list` can show them. The `task` delegation fallback path, however, only merged Claude-style project/user agents when `client.app.agents()` did not provide the desired agent. That made custom OpenCode subagents easier to lose in main-session delegation paths and UI/API wrappers that depend on task-callable agent resolution.
+- Main thread: controller, complete intake owner, and the only user-facing role.
+- `baseline_runner`: prepares, repairs, runs, and closes Baseline.
+- `optimized_runner`: applies only the approved optimization, then runs and closes Optimized.
+- `workflow_supervisor`: read-only terminal review after each Runner.
+- `benchmark_comparator`: computes step-time, throughput, and reward deltas without judging reward reasonableness.
+- `experiment_reporter`: writes the final concise report.
 
-This patch adds OpenCode project/global agent loaders to the delegate-task fallback merge and adds focused regression tests for that behavior.
+The two Runners execute sequentially on the same confirmed NPU allocation by default. They may make implementation decisions autonomously after intake, but may never ask the user or spawn another agent.
 
-## Files changed upstream
-
-The patch changes these upstream files:
-
-- `packages/omo-opencode/src/tools/delegate-task/subagent-discovery.ts`
-- `packages/omo-opencode/src/tools/delegate-task/subagent-discovery.test.ts` (new)
-
-No local machine paths, container names, secrets, or private config are required by the patch.
-
-## Apply the patch
-
-From a clean checkout of `oh-my-openagent`:
+## Install locally
 
 ```bash
-git checkout dev
-git pull
-git apply /path/to/oh-my-openagent-subagent-adapter/patches/0001-enable-opencode-agent-fallback-for-task.patch
+codex plugin add verl-subagent-union-workflow@oh-my-openagent-local
 ```
 
-Then verify:
+Start a new Codex thread in a project that contains the five files under `.codex/agents/`, then invoke:
 
-```bash
-bun test packages/omo-opencode/src/tools/delegate-task/subagent-discovery.test.ts
-opencode agent list
+```text
+$verl-subagent-union-workflow
 ```
 
-For a real custom subagent smoke test, put an agent file under the target project's `.opencode/agents/<name>.md`, restart the OpenCode session/runtime if needed, then call:
+See [docs/workflow.md](docs/workflow.md) and [docs/verl-rollout8-pre-run-confirmation.html](docs/verl-rollout8-pre-run-confirmation.html).
 
-```ts
-task({ subagent_type: "<name>", load_skills: [], prompt: "Return exactly: ok" })
-```
+## Versioning
 
-## Documentation
-
-- `docs/background.md`: why the patch exists and what path it changes.
-- `docs/implementation.md`: exact code-level change and resolution order.
-- `docs/apply-patch.md`: detailed patch and verification workflow.
-- `docs/subagent-workflow-deployment.md`: how to deploy the Codex subagent workflow for another high-performance or large-model VERL/NPU project.
-
-## Packaged workflows
-
-- `verl-subagent-union-workflow/`: OpenCode workflow skill and subagent definitions for controlled VERL + Ascend/NPU optimization runs, including environment repair, runner preflight, topology-pair progression, implementation review, and supervisor gates.
-- `plugins/verl-subagent-union-workflow/` plus `.codex/agents/`: Codex CLI plugin and custom-agent version of the same workflow. See `docs/codex-plugin.md`.
+`versions/v1/` contains the version manifest and patch series. Generated run directories, raw logs, per-step result files, checkpoints, and local agent evidence are not project source and are not archived here.
