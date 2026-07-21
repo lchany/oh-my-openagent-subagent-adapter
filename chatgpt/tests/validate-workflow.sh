@@ -61,6 +61,21 @@ test -s "$PATCH_REPLAY/.codex/agents/baseline_runner.toml"
 test -s "$PATCH_REPLAY/plugins/verl-subagent-union-workflow/.codex-plugin/plugin.json"
 test -s "$PATCH_REPLAY/tests/validate-workflow.sh"
 
+(
+  V2_ROOT="$ROOT/versions/v2"
+  cd "$V2_ROOT"
+  sha256sum -c SHA256SUMS
+  V2_BASE_COMMIT="$(awk '/^base_commit:/ {print $2}' manifest.yaml)"
+  V2_PATCH_PATH="$(awk '/^  path:/ {print $2}' manifest.yaml)"
+  V2_REPLAY="$(mktemp -d)"
+  trap 'rm -rf "$V2_REPLAY"' EXIT
+  git -C "$REPOSITORY_ROOT" archive "$V2_BASE_COMMIT" | tar -x -C "$V2_REPLAY"
+  git -C "$V2_REPLAY" apply "$V2_ROOT/$V2_PATCH_PATH"
+  test -s "$V2_REPLAY/chatgpt/AGENTS.md"
+  test -s "$V2_REPLAY/chatgpt/docs/codex-workflow-bootstrap-and-recovery.md"
+  test -x "$V2_REPLAY/chatgpt/scripts/audit_codex_workflow.sh"
+)
+
 PLUGIN_VERSION="$(python3 - "$PLUGIN_ROOT/.codex-plugin/plugin.json" <<'PY'
 import json
 import sys
@@ -75,6 +90,7 @@ diff -qr --exclude='__pycache__' "$PLUGIN_ROOT" "$CACHE_ROOT"
 python3 -m py_compile "$ROOT/plugins/verl-subagent-union-workflow/skills/verl-subagent-union-workflow/scripts/validate_intake.py"
 "$ROOT/tests/test-intake-and-gates.sh"
 "$ROOT/tests/test-runtime-contracts.sh"
+"$ROOT/tests/test-audit-codex-workflow.sh"
 "$ROOT/tests/validate-architecture-isolation.sh"
 
 echo 'workflow validation passed'

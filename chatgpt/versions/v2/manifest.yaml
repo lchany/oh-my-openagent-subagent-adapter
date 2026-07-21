@@ -1,0 +1,17 @@
+version: v2
+architecture: chatgpt
+architecture_root: chatgpt
+base_commit: 3c65189
+cross_architecture_inputs: false
+purpose: Codex new-environment bootstrap and old-environment recovery guidance
+artifacts:
+  guide: docs/codex-workflow-bootstrap-and-recovery.md
+  automatic_guidance: AGENTS.md
+  audit: scripts/audit_codex_workflow.sh
+patch:
+  path: patches/0001-codex-workflow-bootstrap-and-recovery-guide.patch
+  sha256: 91a6605ffa19b309028a0561f21a4a2bb16c1fcf26fe5abd50574f5a65513c15
+verification:
+  - current-environment full audit returns READY
+  - incomplete old-environment fixture returns NOT READY
+  - complete workflow validation passes

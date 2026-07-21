@@ -27,8 +27,14 @@ $verl-subagent-union-workflow
 
 See [docs/workflow.md](docs/workflow.md) and [docs/verl-rollout8-pre-run-confirmation.html](docs/verl-rollout8-pre-run-confirmation.html).
 
+For installation in a new environment or step-by-step diagnosis of an old environment, follow [docs/codex-workflow-bootstrap-and-recovery.md](docs/codex-workflow-bootstrap-and-recovery.md) and run:
+
+```bash
+./scripts/audit_codex_workflow.sh
+```
+
 ## Versioning
 
-`versions/v1/` contains the version manifest and patch series. Generated run directories, raw logs, per-step result files, checkpoints, and local agent evidence are not project source and are not archived here.
+`versions/v1/` contains the initial Codex workflow patch; `versions/v2/` contains the bootstrap/recovery guidance and audit patch. Generated run directories, raw logs, per-step result files, checkpoints, and local agent evidence are not project source and are not archived here.
 
 Load only the agents, skills, plugin metadata, tests, patches, and runtime state owned by this directory.

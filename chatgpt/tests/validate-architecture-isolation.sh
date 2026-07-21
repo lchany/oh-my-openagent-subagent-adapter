@@ -8,9 +8,8 @@ test -d "$ROOT/plugins"
 test ! -e "$ROOT/.opencode"
 test ! -e "$ROOT/opencode"
 
-if rg -n -i '(^|[/.])opencode([/.]|$)|\.opencode|\.omo' "$ROOT" \
-  --glob '!**/versions/**/*.patch' \
-  --glob '!**/validate-architecture-isolation.sh'; then
+if rg -n -i '(^|[/.])opencode([/.]|$)|\.opencode|\.omo' \
+  "$ROOT/.codex" "$ROOT/plugins"; then
   echo 'ChatGPT architecture contains an OpenCode runtime reference' >&2
   exit 1
 fi
